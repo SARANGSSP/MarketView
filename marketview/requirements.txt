@@ -1,0 +1,16 @@
+websockets==12.0
+aiohttp>=3.9.0
+aiohttp-cors>=0.7.0
+upstox-python-sdk>=2.14.0
+numpy>=1.26.4
+pandas>=2.1.4
+pandas-ta>=0.4.67b0
+protobuf>=4.25.0
+python-dotenv>=1.0.0
+scikit-learn>=1.4.0
+joblib>=1.3.0
+requests>=2.31.0
+
+# ── Fundamentals additions ────────────────────────────────────────────────────
+yfinance>=0.2.40
+psycopg2-binary>=2.9.9
