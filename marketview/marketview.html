@@ -1,0 +1,658 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MarketView – Live Market Data</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet" />
+    <link href="/static/style.css" rel="stylesheet" />
+  </head>
+  <body>
+
+    <!-- ── NAVBAR ── -->
+    <header class="navbar">
+      <div class="nav-brand">
+        
+        <div>
+          <div class="nav-brand-text">MarketView</div>
+          <div class="nav-brand-sub">Indian Markets Edition</div>
+        </div>
+      </div>
+      <div class="nav-right">
+        <div class="nav-live">
+          <div class="live-dot"></div>
+          <span class="nav-live-text">Live Market Data</span>
+        </div>
+        <div class="nav-badge">NSE Live 98</div>
+        <button class="nav-alert-btn" onclick="toggleAlerts()" title="Price Alerts">
+          🔔 <span id="alertCount" class="alert-count" style="display:none">0</span>
+        </button>
+        <button class="nav-compare-btn" onclick="toggleCompare()" id="compareNavBtn">⇄ Compare</button>
+        <a href="/portfolio.html" class="nav-compare-btn" id="navPortfolioBtn" style="text-decoration:none">💼 Portfolio</a>
+        <a href="/auth/google/login" class="nav-compare-btn" id="navSignInBtn" style="text-decoration:none">Sign In</a>
+      </div>
+    </header>
+
+    <!-- ── ALERTS PANEL (fixed overlay) ── -->
+    <div class="alerts-panel" id="alertsPanel" style="display:none">
+      <div class="alerts-header">
+        <span>🔔 Price Alerts</span>
+        <button class="alerts-close" onclick="toggleAlerts()">✕</button>
+      </div>
+      <div class="alert-form">
+        <input id="alertSym"   type="text"   placeholder="Symbol e.g. TCS" />
+        <input id="alertPrice" type="number" placeholder="Price" step="0.01" />
+        <select id="alertDir">
+          <option value="above">↑ Above</option>
+          <option value="below">↓ Below</option>
+        </select>
+        <button class="alert-add-btn" onclick="addAlert()">Add</button>
+      </div>
+      <div id="alertList" class="alert-list"></div>
+    </div>
+
+    <!-- ── TOAST CONTAINER ── -->
+    <div id="toastContainer" class="toast-container"></div>
+
+    <!-- ── COMPARISON OVERLAY ── -->
+    <div class="compare-overlay" id="compareOverlay" style="display:none" onclick="if(event.target===this)toggleCompare()">
+      <div class="compare-panel">
+        <div class="compare-header">
+          <div>
+            <div class="compare-title">⇄ Stock Comparison</div>
+            <div class="compare-sub">Compare up to 4 companies side by side</div>
+          </div>
+          <button class="compare-close" onclick="toggleCompare()">✕</button>
+        </div>
+        <div class="compare-input-row">
+          <div id="compareChips" class="compare-chips"></div>
+          <div class="compare-add-wrap">
+            <input id="compareInput" type="text" placeholder="Add symbol e.g. TCS" list="symbolList"
+              onkeydown="if(event.key==='Enter') addCompareSymbol()" />
+            <button class="compare-add-btn" onclick="addCompareSymbol()">+ Add</button>
+            <button class="compare-clear-btn" onclick="clearCompare()">Clear all</button>
+          </div>
+        </div>
+        <div class="compare-tabs">
+          <button class="compare-tab active" onclick="setCompareTab(this,'price')">Price %</button>
+          <button class="compare-tab" onclick="setCompareTab(this,'ratios')">Key Ratios</button>
+          <button class="compare-tab" onclick="setCompareTab(this,'quarterly')">Quarterly</button>
+          <button class="compare-tab" onclick="setCompareTab(this,'volume')">Volume</button>
+        </div>
+        <div class="compare-loading" id="compareLoading" style="display:none">
+          <div class="fin-spinner"></div><span>Loading data…</span>
+        </div>
+        <div class="compare-error" id="compareError" style="display:none"></div>
+        <!-- Price % pane -->
+        <div class="compare-pane" id="cmpPanePrice">
+          <div class="compare-chart-wrap"><canvas id="cmpPriceChart"></canvas></div>
+          <div class="compare-legend" id="cmpPriceLegend"></div>
+        </div>
+        <!-- Ratios pane -->
+        <div class="compare-pane" id="cmpPaneRatios" style="display:none">
+          <div class="compare-table-wrap">
+            <table class="compare-table" id="cmpRatiosTable"></table>
+          </div>
+        </div>
+        <!-- Quarterly pane -->
+        <div class="compare-pane" id="cmpPaneQuarterly" style="display:none">
+          <div class="compare-sub-tabs">
+            <button class="compare-sub-tab active" onclick="setCmpQTab(this,'revenue')">Revenue</button>
+            <button class="compare-sub-tab" onclick="setCmpQTab(this,'profit')">Net Profit</button>
+          </div>
+          <div class="compare-chart-wrap"><canvas id="cmpQChart"></canvas></div>
+        </div>
+        <!-- Volume pane -->
+        <div class="compare-pane" id="cmpPaneVolume" style="display:none">
+          <div class="compare-chart-wrap"><canvas id="cmpVolChart"></canvas></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="page">
+
+      <!-- ── TOP ROW ── -->
+      <div class="top-row">
+        <!-- Stock Header -->
+        <div class="card">
+          <div class="stock-header">
+            <div class="stock-title-row">
+              <span class="stock-symbol" id="stockSymbol">RELIANCE</span>
+              <span class="stock-exchange">NSE</span>
+              <span class="stock-live-badge">
+                <span style="width:5px;height:5px;border-radius:50%;background:#4caf50;display:inline-block;animation:pulse 1.5s infinite;"></span>
+                LIVE
+              </span>
+            </div>
+            <div style="font-size:11px;color:#8a9bb5;margin-bottom:8px" id="stockName">Reliance Industries Ltd</div>
+            <div class="stock-price" id="stockPrice">₹—</div>
+            <div class="stock-change neg" id="stockChange">—</div>
+            <!-- Composite signal badge — most actionable signal, shown near price -->
+            <div id="priceSignalBadge" class="price-signal-badge sig-neutral" style="display:none">—</div>
+            <!-- Bid / Ask / Spread -->
+            <div class="bid-ask-row">
+              <div class="ba-item">
+                <span class="ba-label">Bid</span>
+                <span class="ba-val" id="liveBid">—</span>
+              </div>
+              <span class="ba-sep">·</span>
+              <div class="ba-item">
+                <span class="ba-label">Ask</span>
+                <span class="ba-val" id="liveAsk">—</span>
+              </div>
+              <span class="ba-sep">·</span>
+              <div class="ba-item">
+                <span class="ba-label">Spread</span>
+                <span class="ba-spread-val" id="liveSpread">—</span>
+              </div>
+            </div>
+            <!-- Last update timestamp + tick rate -->
+            <div class="tick-meta-row">
+              <span class="tick-age" id="tickAge">Waiting for data…</span>
+              <div class="tick-rate-wrap">
+                <div id="activityDot"></div>
+                <span class="tick-rate-label"><span id="tickRate">—</span> ticks</span>
+              </div>
+            </div>
+          </div>
+          <div class="search-section">
+            <div class="search-label">Search Stock Symbol</div>
+            <div class="search-box">
+              <span class="search-icon">🔍</span>
+              <input id="searchInput" type="text" placeholder="Search by symbol or company name..." list="symbolList" />
+              <datalist id="symbolList">
+                <option value="RELIANCE"></option><option value="TCS"></option>
+                <option value="INFY"></option><option value="HDFCBANK"></option>
+                <option value="ICICIBANK"></option><option value="WIPRO"></option>
+                <option value="TATAMOTORS"></option><option value="BAJFINANCE"></option>
+                <option value="SBIN"></option><option value="AXISBANK"></option>
+              </datalist>
+            </div>
+          </div>
+        </div>
+
+        <!-- Market Statistics -->
+        <div class="card">
+          <div class="market-stats">
+            <div class="ms-title">Market Statistics</div>
+            <div class="ms-grid">
+              <div class="ms-cell">
+                <div class="ms-cell-label">Open</div>
+                <div class="ms-cell-val" id="msOpen">—</div>
+              </div>
+              <div class="ms-cell">
+                <div class="ms-cell-label">Day High</div>
+                <div class="ms-cell-val" id="msHigh">—</div>
+              </div>
+              <div class="ms-cell">
+                <div class="ms-cell-label">Day Low</div>
+                <div class="ms-cell-val" id="msLow">—</div>
+              </div>
+              <div class="ms-cell">
+                <div class="ms-cell-label">Volume</div>
+                <div class="ms-cell-val" id="msVol">—</div>
+              </div>
+              <div class="ms-cell">
+                <div class="ms-cell-label">Prev Close</div>
+                <div class="ms-cell-val" id="msPrevClose">—</div>
+              </div>
+              <div class="ms-cell">
+                <div class="ms-cell-label">VWAP</div>
+                <div class="ms-cell-val" id="msVwap">—</div>
+              </div>
+              <div class="ms-cell">
+                <div class="ms-cell-label">Adj. Price</div>
+                <div class="ms-cell-val" id="msAdjPrice">—</div>
+              </div>
+              <div class="ms-cell">
+                <div class="ms-cell-label">52W High</div>
+                <div class="ms-cell-val up" id="ms52High">—</div>
+              </div>
+              <div class="ms-cell">
+                <div class="ms-cell-label">52W Low</div>
+                <div class="ms-cell-val dn" id="ms52Low">—</div>
+              </div>
+            </div>
+            <div class="ms-bottom">
+              <div class="ms-bottom-row" style="margin-bottom:5px">
+                <span class="ms-bottom-label">Support</span>
+                <span class="ms-bottom-val" id="msSupport">—</span>
+              </div>
+              <div class="ms-bottom-row">
+                <span class="ms-bottom-label">Resistance</span>
+                <span class="ms-bottom-val" id="msResistance">—</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── WATCHLIST ── -->
+      <div class="card">
+        <div class="watchlist-wrap">
+          <div class="wl-header">
+            <span class="wl-title">Watchlist</span>
+            <div class="wl-add">
+              <input id="wlInput" type="text" placeholder="Add symbol…" list="symbolList"
+                onkeydown="if(event.key==='Enter') addToWatchlist()" />
+              <button class="wl-add-btn" onclick="addToWatchlist()">+ Add</button>
+            </div>
+          </div>
+          <div class="wl-items" id="wlItems"></div>
+        </div>
+      </div>
+
+      <!-- ── LIVE TICK CHART (intraday market hours only) ── -->
+      <div class="card" id="liveTickCard" style="display:none">
+        <div class="live-tick-card">
+          <div class="sec-header">
+            <div>
+              <div class="sec-title">Live Tick Stream &nbsp;<span id="liveTickSym" style="color:var(--accent);font-size:11px;font-weight:600"></span></div>
+              <div class="sec-sub">Rolling 200-tick price feed — appears during market hours only</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:12px">
+              <div class="live-tick-stats">
+                <span class="lts-item"><span class="lts-label">HIGH</span><span class="lts-val up" id="ltHigh">—</span></span>
+                <span class="lts-sep">·</span>
+                <span class="lts-item"><span class="lts-label">LOW</span><span class="lts-val dn" id="ltLow">—</span></span>
+                <span class="lts-sep">·</span>
+                <span class="lts-item"><span class="lts-label">TICKS</span><span class="lts-val" id="ltCount">0</span></span>
+              </div>
+              <div class="live-bar-label"><span class="live-bar-dot"></span> STREAMING</div>
+            </div>
+          </div>
+          <div class="live-tick-wrap"><canvas id="liveTickChart"></canvas></div>
+        </div>
+      </div>
+
+      <!-- ── PRICE CHART ── -->
+      <div class="card">
+        <div class="price-chart-card">
+          <div class="sec-header">
+            <div>
+              <div class="sec-title">Price Chart</div>
+              <div class="sec-sub">Real-time price movement with Bollinger Bands (20, 2)</div>
+            </div>
+            <div id="liveBarBadge" class="live-bar-label" style="display:none">
+              <span class="live-bar-dot"></span> Live Bar
+            </div>
+          </div>
+          <div class="chart-wrap">
+            <canvas id="priceChart"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── CANDLESTICK PATTERN ANALYSIS ── -->
+      <div class="card">
+        <div class="pattern-card">
+          <div class="sec-header">
+            <div>
+              <div class="sec-title">Candlestick Pattern Analysis</div>
+              <div class="sec-sub">Pattern recognition over last 20 candles</div>
+            </div>
+            <div class="pattern-badge">
+              <div class="pattern-name">⚪ Detecting…</div>
+              <div class="pattern-signal-badge">—</div>
+            </div>
+          </div>
+
+          <div class="time-range-row">
+            <div class="time-range-label"><span>⧖</span><span>Time Range</span></div>
+            <div style="display:flex;gap:4px;align-items:center">
+              <div class="time-btns">
+                <button class="time-btn active" onclick="setRange(this,'1d')">Day</button>
+                <button class="time-btn"        onclick="setRange(this,'1w')">Week</button>
+                <button class="time-btn"        onclick="setRange(this,'1m')">Month</button>
+                <button class="time-btn"        onclick="setRange(this,'1y')">Year</button>
+                <button class="time-btn"        onclick="setRange(this,'5y')">5 Year</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="pattern-stats">
+            <div class="pstat"><div class="pstat-num bull" id="bullCount">—</div><div class="pstat-label">Bullish Patterns</div></div>
+            <div class="pstat"><div class="pstat-num bear" id="bearCount">—</div><div class="pstat-label">Bearish Patterns</div></div>
+            <div class="pstat"><div class="pstat-num neut" id="neutCount">—</div><div class="pstat-label">Neutral Patterns</div></div>
+          </div>
+
+          <div class="candle-chart-wrap">
+            <canvas id="candleChart"></canvas>
+          </div>
+
+          <div class="pattern-scale">
+            <div class="pscale-item"><div class="pscale-name"><span class="pscale-dot" style="background:#4caf50"></span>Hammer</div><div class="pscale-desc">Strong bullish reversal signal</div></div>
+            <div class="pscale-item"><div class="pscale-name"><span class="pscale-dot" style="background:#81c784"></span>Morning Star</div><div class="pscale-desc">Three-candle bullish reversal</div></div>
+            <div class="pscale-item"><div class="pscale-name"><span class="pscale-dot" style="background:#ef9a9a"></span>Engulfing</div><div class="pscale-desc">Bullish or bearish momentum</div></div>
+            <div class="pscale-item"><div class="pscale-name"><span class="pscale-dot" style="background:#b0bec5"></span>Doji</div><div class="pscale-desc">Indecision, trend reversal signal</div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── RSI + MACD ── -->
+      <div class="indicator-row">
+        <div class="card">
+          <div class="ind-card">
+            <div class="ind-header">
+              <div><div class="ind-title">RSI Indicator</div><div class="ind-sub">Relative Strength Index (Period: 14)</div></div>
+              <div style="text-align:right">
+                <div class="ind-val" id="rsiVal" style="color:#5c6bc0">—</div>
+                <div class="ind-signal sig-neutral" id="rsiSig">Neutral</div>
+              </div>
+            </div>
+            <div class="ind-chart-wrap"><canvas id="rsiChart"></canvas></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="ind-card">
+            <div class="ind-header">
+              <div><div class="ind-title">MACD Indicator</div><div class="ind-sub">Moving Average Convergence Divergence (12, 26, 9)</div></div>
+              <div style="text-align:right">
+                <div class="ind-val" id="macdVal" style="color:#c62828">—</div>
+                <div class="ind-signal sig-bearish" id="macdSig">Bearish</div>
+              </div>
+            </div>
+            <div class="ind-chart-wrap"><canvas id="macdChart"></canvas></div>
+            <div class="macd-legend">
+              <div class="macd-leg-item"><div class="macd-leg-dot" style="background:#7986cb"></div>Histogram</div>
+              <div class="macd-leg-item"><div class="macd-leg-dot" style="background:#1565c0"></div>MACD</div>
+              <div class="macd-leg-item"><div class="macd-leg-dot" style="background:#ef5350"></div>Signal</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── VOLUME ── -->
+      <div class="card">
+        <div class="vol-card">
+          <div class="sec-header" style="margin-bottom:4px">
+            <div>
+              <div class="sec-title">Volume Analysis</div>
+              <div class="vol-sub-row">
+                <span class="vol-sub">Trading volume over time</span>
+                <span class="vol-avg" id="volAvg">Avg Volume: —</span>
+              </div>
+            </div>
+          </div>
+          <div class="vol-chart-wrap"><canvas id="volChart"></canvas></div>
+        </div>
+      </div>
+
+
+      <!-- ── FIBONACCI RETRACEMENT ── -->
+      <div class="card">
+        <div class="price-chart-card">
+          <div class="sec-header">
+            <div>
+              <div class="sec-title">Fibonacci Retracement</div>
+              <div class="sec-sub">Key support/resistance levels from swing high/low</div>
+            </div>
+            <div id="fibRangeBadge" style="font-size:10px;color:var(--text3)"></div>
+          </div>
+          <div id="fibLevels" style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:12px"></div>
+          <div style="height:160px;position:relative"><canvas id="fibChart"></canvas></div>
+
+          <details style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px">
+            <summary style="font-size:11px;color:var(--text3);cursor:pointer;letter-spacing:0.04em;list-style:none;display:flex;align-items:center;gap:6px">
+              <span style="font-size:10px">▸</span> What does this mean?
+            </summary>
+            <div style="margin-top:10px;font-size:11px;color:var(--text2);line-height:1.7;display:grid;grid-template-columns:1fr 1fr;gap:8px">
+              <div style="background:var(--bg3);border-radius:7px;padding:10px 12px">
+                <div style="font-weight:700;color:var(--accent);margin-bottom:4px">📐 What is Fibonacci?</div>
+                Traders use the swing high and low of a price move to find levels where the stock is likely to pause, bounce, or reverse. These are not magic — they work because many traders watch the same levels.
+              </div>
+              <div style="background:var(--bg3);border-radius:7px;padding:10px 12px">
+                <div style="font-weight:700;color:var(--green);margin-bottom:4px">38.2% — Shallow pullback</div>
+                If price pulls back to this level after a rally, it often means the trend is still strong. Bulls tend to buy here.
+              </div>
+              <div style="background:var(--bg3);border-radius:7px;padding:10px 12px">
+                <div style="font-weight:700;color:var(--yellow);margin-bottom:4px">50% — The midpoint</div>
+                Not a true Fibonacci number but widely watched. A 50% retracement is considered a healthy pullback — neither too weak nor too deep.
+              </div>
+              <div style="background:var(--bg3);border-radius:7px;padding:10px 12px">
+                <div style="font-weight:700;color:var(--red);margin-bottom:4px">61.8% — The golden ratio</div>
+                The most important level. If price holds here it often signals a strong reversal. If it breaks below, the trend may be reversing entirely.
+              </div>
+              <div style="background:var(--bg3);border-radius:7px;padding:10px 12px;grid-column:1/-1">
+                <div style="font-weight:700;color:var(--text2);margin-bottom:4px">💡 How to use it</div>
+                If the stock is falling after a rally — watch the 38.2%, 50%, and 61.8% levels as potential buying zones. If it's rising after a dip — the same levels act as resistance. The dashed lines on the chart show exactly where these prices are.
+              </div>
+            </div>
+          </details>
+        </div>
+      </div>
+
+      <!-- ── ICHIMOKU CLOUD ── -->
+      <div class="card">
+        <div class="price-chart-card">
+          <div class="sec-header">
+            <div>
+              <div class="sec-title">Ichimoku Cloud</div>
+              <div class="sec-sub">Tenkan(9) · Kijun(26) · Senkou A/B · Chikou</div>
+            </div>
+            <div id="ichSignal" class="ind-signal sig-neutral" style="margin-top:0">—</div>
+          </div>
+          <div style="height:200px;position:relative"><canvas id="ichChart"></canvas></div>
+          <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
+
+          </div>
+
+          <details style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px">
+            <summary style="font-size:11px;color:var(--text3);cursor:pointer;letter-spacing:0.04em;list-style:none;display:flex;align-items:center;gap:6px">
+              <span style="font-size:10px">▸</span> What does this mean?
+            </summary>
+            <div style="margin-top:10px;font-size:11px;color:var(--text2);line-height:1.7;display:grid;grid-template-columns:1fr 1fr;gap:8px">
+              <div style="background:var(--bg3);border-radius:7px;padding:10px 12px">
+                <div style="font-weight:700;color:var(--accent);margin-bottom:4px">☁️ What is Ichimoku?</div>
+                Ichimoku is a Japanese system that shows trend direction, momentum, and support/resistance all in one chart. The "cloud" is its most distinctive feature — it gives a visual snapshot of where the stock stands.
+              </div>
+              <div style="background:var(--bg3);border-radius:7px;padding:10px 12px">
+                <div style="font-weight:700;color:var(--accent);margin-bottom:4px">🔵 Tenkan (blue) — Fast line</div>
+                Average of the last 9 candles' high and low. Moves quickly. When it crosses above the Kijun line, it's often a buy signal.
+              </div>
+              <div style="background:var(--bg3);border-radius:7px;padding:10px 12px">
+                <div style="font-weight:700;color:var(--yellow);margin-bottom:4px">🟡 Kijun (yellow) — Slow line</div>
+                Average of the last 26 candles. Moves slowly — acts like a magnet. Price often returns to it. A great support/resistance level on its own.
+              </div>
+              <div style="background:var(--bg3);border-radius:7px;padding:10px 12px">
+                <div style="font-weight:700;color:var(--green);margin-bottom:4px">🟢 Green cloud — Bullish zone</div>
+                When Senkou A is above Senkou B, the cloud is green. Price above a green cloud = strong uptrend. The thicker the cloud, the stronger the support.
+              </div>
+              <div style="background:var(--bg3);border-radius:7px;padding:10px 12px">
+                <div style="font-weight:700;color:var(--red);margin-bottom:4px">🔴 Red cloud — Bearish zone</div>
+                When Senkou B is above Senkou A, the cloud is red. Price below a red cloud = strong downtrend. A thin cloud means weaker resistance.
+              </div>
+              <div style="background:var(--bg3);border-radius:7px;padding:10px 12px">
+                <div style="font-weight:700;color:var(--purple);margin-bottom:4px">🟣 Chikou (purple) — Confirmation</div>
+                Today's closing price plotted 26 periods back. If it's above past prices — bullish confirmation. Below — bearish.
+              </div>
+              <div style="background:var(--bg3);border-radius:7px;padding:10px 12px;grid-column:1/-1">
+                <div style="font-weight:700;color:var(--text2);margin-bottom:4px">💡 Simple rule of thumb</div>
+                <span style="color:var(--green)">Bullish</span> = price above green cloud + Tenkan above Kijun + Chikou above past price. <span style="color:var(--red)">Bearish</span> = opposite of all three. When signals conflict, stay cautious — the market is undecided.
+              </div>
+            </div>
+          </details>
+        </div>
+      </div>
+
+      <!-- ── COMPANY OVERVIEW & KEY RATIOS ── -->
+      <div class="card" id="fundamentalsCard" style="display:none">
+        <div class="fund-card">
+          <div class="sec-header">
+            <div>
+              <div class="sec-title">Company Overview</div>
+              <div class="sec-sub" id="fundSectorLine">—</div>
+            </div>
+            <div class="fund-updated" id="fundUpdated"></div>
+          </div>
+
+          <!-- Ratios grid -->
+          <div class="fund-ratios-grid">
+            <div class="fund-ratio-cell">
+              <div class="fund-ratio-label">Market Cap</div>
+              <div class="fund-ratio-val" id="frMarketCap">—</div>
+            </div>
+            <div class="fund-ratio-cell">
+              <div class="fund-ratio-label">P / E Ratio</div>
+              <div class="fund-ratio-val" id="frPE">—</div>
+            </div>
+            <div class="fund-ratio-cell">
+              <div class="fund-ratio-label">P / B Ratio</div>
+              <div class="fund-ratio-val" id="frPB">—</div>
+            </div>
+            <div class="fund-ratio-cell">
+              <div class="fund-ratio-label">ROE</div>
+              <div class="fund-ratio-val" id="frROE">—</div>
+            </div>
+            <div class="fund-ratio-cell">
+              <div class="fund-ratio-label">ROCE</div>
+              <div class="fund-ratio-val" id="frROCE">—</div>
+            </div>
+            <div class="fund-ratio-cell">
+              <div class="fund-ratio-label">Debt / Equity</div>
+              <div class="fund-ratio-val" id="frDE">—</div>
+            </div>
+            <div class="fund-ratio-cell">
+              <div class="fund-ratio-label">EPS (TTM)</div>
+              <div class="fund-ratio-val" id="frEPS">—</div>
+            </div>
+            <div class="fund-ratio-cell">
+              <div class="fund-ratio-label">Dividend Yield</div>
+              <div class="fund-ratio-val" id="frDivYield">—</div>
+            </div>
+            <div class="fund-ratio-cell">
+              <div class="fund-ratio-label">Net Margin</div>
+              <div class="fund-ratio-val" id="frNetMargin">—</div>
+            </div>
+          </div>
+
+          <!-- Company description -->
+          <div class="fund-desc-wrap" id="fundDescWrap" style="display:none">
+            <div class="fund-desc-text" id="fundDesc"></div>
+            <button class="fund-desc-toggle" id="fundDescToggle" onclick="toggleFundDesc()">Show more ▾</button>
+          </div>
+
+          <!-- Website link -->
+          <div class="fund-website" id="fundWebsite" style="display:none">
+            🌐 <a id="fundWebsiteLink" href="#" target="_blank" rel="noopener"></a>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── FINANCIALS (tabbed: Quarterly / Annual / Balance Sheet / Cash Flow) ── -->
+      <div class="card" id="financialsCard" style="display:none">
+        <div class="fin-card">
+          <div class="sec-header" style="margin-bottom:10px">
+            <div>
+              <div class="sec-title">Financials</div>
+              <div class="sec-sub">In ₹ Crores &nbsp;·&nbsp; Source: Yahoo Finance</div>
+            </div>
+            <div class="fin-tabs">
+              <button class="fin-tab active" onclick="setFinTab(this,'quarterly')">Quarterly</button>
+              <button class="fin-tab" onclick="setFinTab(this,'annual')">Annual</button>
+              <button class="fin-tab" onclick="setFinTab(this,'balance')">Balance Sheet</button>
+              <button class="fin-tab" onclick="setFinTab(this,'cashflow')">Cash Flow</button>
+            </div>
+          </div>
+
+          <!-- Loading state -->
+          <div class="fin-loading" id="finLoading">
+            <div class="fin-spinner"></div>
+            <span>Loading financial data…</span>
+          </div>
+
+          <!-- Error state -->
+          <div class="fin-error" id="finError" style="display:none">
+            <span id="finErrorMsg">Unable to load financial data.</span>
+          </div>
+
+          <!-- ── QUARTERLY TABLE ── -->
+          <div id="tabQuarterly" class="fin-tab-pane">
+            <div class="fin-table-wrap">
+              <table class="fin-table" id="tblQuarterly">
+                <thead><tr id="qHead"></tr></thead>
+                <tbody id="qBody"></tbody>
+              </table>
+            </div>
+            <div class="fin-chart-wrap">
+              <canvas id="finChart" height="80"></canvas>
+            </div>
+          </div>
+
+          <!-- ── ANNUAL TABLE ── -->
+          <div id="tabAnnual" class="fin-tab-pane" style="display:none">
+            <div class="fin-table-wrap">
+              <table class="fin-table" id="tblAnnual">
+                <thead><tr id="aHead"></tr></thead>
+                <tbody id="aBody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- ── BALANCE SHEET TABLE ── -->
+          <div id="tabBalance" class="fin-tab-pane" style="display:none">
+            <div class="fin-table-wrap">
+              <table class="fin-table" id="tblBalance">
+                <thead><tr id="bHead"></tr></thead>
+                <tbody id="bBody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- ── CASH FLOW TABLE ── -->
+          <div id="tabCashflow" class="fin-tab-pane" style="display:none">
+            <div class="fin-table-wrap">
+              <table class="fin-table" id="tblCashflow">
+                <thead><tr id="cfHead"></tr></thead>
+                <tbody id="cfBody"></tbody>
+              </table>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- ── ABOUT ── -->
+      <div class="card">
+        <div class="about-card">
+          <div class="about-grid">
+            <div>
+              <div class="about-title">About MarketView</div>
+              <div class="about-text">
+                MarketView provides real-time market analysis for Indian equity markets (NSE).
+                Streams live data via <strong>Upstox MarketDataStreamerV3</strong> with auto-reconnect.
+                Displays Bollinger Bands, Candlestick Pattern Detection (Hammer, Doji, Engulfing, Morning/Evening Star),
+                RSI, MACD, Support/Resistance levels, and a live Watchlist with Price Alerts.
+              </div>
+            </div>
+            <div class="about-right">
+              <div class="about-update">Data updates every 2 seconds</div>
+              <div class="about-links">
+                <a class="about-link" onclick="toggleAlerts()">🔔 Alerts</a>
+              </div>
+            </div>
+          </div>
+          <div class="about-bottom">
+            <div class="ab-col"><div class="ab-label">Bollinger Bands</div><div class="ab-text">20-period SMA ± 2 std dev — price channel boundaries</div></div>
+            <div class="ab-col"><div class="ab-label">Pattern Detection</div><div class="ab-text">Scans last 20 candles for 8 classic candlestick patterns</div></div>
+            <div class="ab-col"><div class="ab-label">Auto-Reconnect</div><div class="ab-text">Stream reconnects automatically with exponential backoff</div></div>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- .page -->
+
+    <script>
+      // ── Server config — update DUCKDNS_NAME to your subdomain ──
+      var DUCKDNS_NAME = "yourname";   // e.g. "marketview" → marketview.duckdns.org
+      var PORT_WS      = 8765;
+      var PORT_REST    = 8000;
+      var hostname     = window.location.hostname;
+window.MV_WS_URL   = "wss://stockmarketview.duckdns.org/ws";
+window.MV_REST_URL = "https://stockmarketview.duckdns.org";
+window.MV_API_KEY  = "018252a4bd0fa6c9370630e02f5b89a8844ec3b678c71cb49efeb12827dd7699"    </script>
+    <script src="/static/marketview.js"></script>
+  </body>
+</html>
