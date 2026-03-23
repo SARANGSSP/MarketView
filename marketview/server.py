@@ -95,3 +95,153 @@ async def fetch_with_retry(fn, *args, **kwargs):
             delay = RETRY_BASE_DELAY * (2 ** attempt)
             print(f"[Retry] Attempt {attempt+1} failed: {e}. Retrying in {delay}s…")
             await asyncio.sleep(delay)
+
+# ── CANDLESTICK PATTERN DETECTION ────────────────────────────────────────────
+def detect_patterns(df: pd.DataFrame) -> dict:
+    """
+    Scan the last 20 candles for classic candlestick patterns.
+    Returns counts and the most recent pattern found.
+    """
+    if len(df) < 3:
+        return {
+            "bull_count": 0, "bear_count": 0, "neut_count": 0,
+            "latest_pattern": "None", "latest_signal": "Neutral",
+        }
+
+    window = df.tail(20).reset_index()
+    bull = bear = neut = 0
+    latest_name  = "None"
+    latest_signal = "Neutral"
+
+    for i in range(2, len(window)):
+        c  = window.iloc[i]
+        p  = window.iloc[i - 1]
+        pp = window.iloc[i - 2]
+
+        body  = abs(c.close - c.open)
+        rng   = c.high - c.low
+        upper = c.high - max(c.open, c.close)
+        lower = min(c.open, c.close) - c.low
+
+        if rng < 1e-6:
+            continue
+
+        name = sig = None
+
+        # Doji – indecision
+        if body <= rng * 0.1:
+            name, sig = "Doji", "Neutral"
+            neut += 1
+
+        # Hammer – small body, long lower wick, bullish
+        elif lower >= body * 2 and upper <= body * 0.5 and c.close > c.open:
+            name, sig = "Hammer", "Bullish"
+            bull += 1
+
+        # Inverted Hammer – bullish reversal
+        elif upper >= body * 2 and lower <= body * 0.5 and c.close > c.open:
+            name, sig = "Inverted Hammer", "Bullish"
+            bull += 1
+
+        # Shooting Star – bearish reversal
+        elif upper >= body * 2 and lower <= body * 0.5 and c.close < c.open:
+            name, sig = "Shooting Star", "Bearish"
+            bear += 1
+
+        # Bullish Engulfing
+        elif (p.close < p.open and c.close > c.open
+              and c.open <= p.close and c.close >= p.open):
+            name, sig = "Bullish Engulfing", "Bullish"
+            bull += 1
+
+        # Bearish Engulfing
+        elif (p.close > p.open and c.close < c.open
+              and c.open >= p.close and c.close <= p.open):
+            name, sig = "Bearish Engulfing", "Bearish"
+            bear += 1
+
+        # Morning Star – three-candle bullish reversal
+        elif (pp.close < pp.open
+              and abs(p.close - p.open) <= (p.high - p.low) * 0.3
+              and c.close > c.open
+              and c.close > (pp.open + pp.close) / 2):
+            name, sig = "Morning Star", "Bullish"
+            bull += 1
+
+        # Evening Star – three-candle bearish reversal
+        elif (pp.close > pp.open
+              and abs(p.close - p.open) <= (p.high - p.low) * 0.3
+              and c.close < c.open
+              and c.close < (pp.open + pp.close) / 2):
+            name, sig = "Evening Star", "Bearish"
+            bear += 1
+
+        if name:
+            latest_name, latest_signal = name, sig
+
+    return {
+        "bull_count":     bull,
+        "bear_count":     bear,
+        "neut_count":     neut,
+        "latest_pattern": latest_name,
+        "latest_signal":  latest_signal,
+    }
+
+# ── SUPPORT / RESISTANCE ──────────────────────────────────────────────────────
+def find_support_resistance(df: pd.DataFrame, n: int = 60):
+    """
+    Identify key support and resistance from pivot highs/lows.
+    Returns (support, resistance) or (None, None) if not enough data.
+    """
+    if len(df) < 5:
+        return None, None
+
+    window = df.tail(n).reset_index()
+    pivot_highs, pivot_lows = [], []
+
+    for i in range(2, len(window) - 2):
+        h = window.iloc[i]["high"]
+        l = window.iloc[i]["low"]
+        if (h > window.iloc[i-1]["high"] and h > window.iloc[i+1]["high"]
+                and h > window.iloc[i-2]["high"] and h > window.iloc[i+2]["high"]):
+            pivot_highs.append(float(h))
+        if (l < window.iloc[i-1]["low"] and l < window.iloc[i+1]["low"]
+                and l < window.iloc[i-2]["low"] and l < window.iloc[i+2]["low"]):
+            pivot_lows.append(float(l))
+
+    resistance = round(max(pivot_highs[-3:]), 2) if pivot_highs else round(float(df["high"].max()), 2)
+    support    = round(min(pivot_lows[-3:]),  2) if pivot_lows  else round(float(df["low"].min()),  2)
+    return support, resistance
+
+# ── SAFE FLOAT HELPER ─────────────────────────────────────────────────────────
+def _safe(v, decimals: int = 2):
+    """Round a potentially NaN/None float safely."""
+    try:
+        f = float(v)
+        return round(f, decimals) if not np.isnan(f) else None
+    except (TypeError, ValueError):
+        return None
+
+def _json_response(data, status=200):
+    """
+    aiohttp's json_response dropped the 'default' kwarg in newer versions.
+    This helper pre-serialises data using a custom encoder that converts
+    non-serialisable types (Timestamp, NaN, numpy scalars, etc.) to safe values.
+    """
+    def _default(obj):
+        import math
+        if isinstance(obj, float) and math.isnan(obj):
+            return None
+        try:
+            # numpy scalar types
+            return obj.item()
+        except AttributeError:
+            pass
+        return str(obj)
+    return web.Response(
+        text=json.dumps(data, default=_default),
+        content_type="application/json",
+        status=status,
+    )
+
+
