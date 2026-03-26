@@ -133,3 +133,153 @@ class DataProvider:
         # Sort each bucket alphabetically by symbol
         combined = sym_prefix + name_prefix + name_sub
         return combined[:limit]
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # 2. HISTORICAL BASELINE
+    # ──────────────────────────────────────────────────────────────────────────
+    def get_baseline(self, symbol: str, min_candles: int = 200) -> tuple[pd.DataFrame, str]:
+        # ── Cache check ──
+        if self._cache:
+            cached = self._cache.get_ohlcv(symbol, "baseline")
+            if cached is not None:
+                df, name = cached
+                print(f"[DataProvider] {symbol}: baseline loaded from cache ({len(df)} candles).")
+                return df, name
+
+        key, name = self.resolve(symbol)
+        api  = upstox_client.HistoryV3Api(self._api_client)
+        to_d = date.today().strftime("%Y-%m-%d")
+        fr_d = (date.today() - timedelta(days=420)).strftime("%Y-%m-%d")
+
+        print(f"[DataProvider] Fetching historical candles for {symbol} …")
+        try:
+            resp = api.get_historical_candle_data1(
+                instrument_key=key,
+                unit="days", interval="1",
+                to_date=to_d, from_date=fr_d,
+            )
+        except Exception as e:
+            raise RuntimeError(f"Historical API failed for {symbol}: {e}")
+
+        raw_candles = resp.data.candles
+        if not raw_candles:
+            raise RuntimeError(f"No historical data returned for {symbol}.")
+
+        df = pd.DataFrame(
+            raw_candles,
+            columns=["time", "open", "high", "low", "close", "volume", "oi"],
+        )
+        df["time"] = pd.to_datetime(df["time"])
+        df = df.set_index("time")[["open", "high", "low", "close", "volume"]]
+        df = df.sort_index()
+
+        print(f"[DataProvider] {symbol}: {len(df)} candles loaded. "
+              f"Last close ₹{df['close'].iloc[-1]:.2f}")
+
+        if self._cache:
+            self._cache.set_ohlcv(symbol, "baseline", df, name)
+
+        return df, name
+
+    def get_intraday(self, symbol: str) -> tuple[pd.DataFrame, str]:
+        """
+        Fetch today's intraday 1-minute candles from market open.
+        Uses Upstox V3 get_intra_day_candle_data.
+        Returns empty DataFrame if market hasn't opened yet.
+        """
+        # ── Cache check (short TTL — 30s during market hours) ──
+        if self._cache:
+            cached = self._cache.get_ohlcv(symbol, "1d")
+            if cached is not None:
+                df, name = cached
+                print(f"[DataProvider] {symbol}: intraday loaded from cache ({len(df)} candles).")
+                return df, name
+
+        key, name = self.resolve(symbol)
+        api = upstox_client.HistoryV3Api(self._api_client)
+        print(f"[DataProvider] Fetching intraday 1m candles for {symbol} …")
+        try:
+            resp = api.get_intra_day_candle_data(key, "minutes", "1")
+        except Exception as e:
+            raise RuntimeError(f"Intraday API failed for {symbol}: {e}")
+
+        raw = getattr(getattr(resp, "data", None), "candles", None) or []
+        if not raw:
+            print(f"[DataProvider] {symbol}: no intraday candles (market closed?) - falling back to baseline.")
+            try:
+                baseline_df, _ = self.get_baseline(symbol, min_candles=0)
+                if baseline_df is not None and len(baseline_df):
+                    last = baseline_df.iloc[-1]
+                    df = pd.DataFrame(
+                        [[last["open"], last["high"], last["low"], last["close"], last["volume"]]],
+                        index=pd.DatetimeIndex([baseline_df.index[-1]]),
+                        columns=["open", "high", "low", "close", "volume"],
+                    )
+                    df.index.name = "time"
+                    print(f"[DataProvider] {symbol}: baseline LTP fallback -> {last['close']:.2f}")
+                    return df, name
+            except Exception as be:
+                print(f"[DataProvider] {symbol}: baseline fallback failed: {be}")
+            df = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+            df.index.name = "time"
+            return df, name
+
+        df = pd.DataFrame(raw, columns=["time", "open", "high", "low", "close", "volume", "oi"])
+        df["time"] = pd.to_datetime(df["time"])
+        df = df.set_index("time")[["open", "high", "low", "close", "volume"]]
+        df = df.sort_index()
+        print(f"[DataProvider] {symbol}: {len(df)} intraday candles from "
+              f"{df.index[0].strftime('%H:%M')} to {df.index[-1].strftime('%H:%M')}")
+
+        if self._cache:
+            self._cache.set_ohlcv(symbol, "1d", df, name)
+
+        return df, name
+
+    def get_history(self, symbol: str, range_: str):
+        """Fetch historical OHLCV for the given time range."""
+        # ── Cache check ──
+        if self._cache:
+            cached = self._cache.get_ohlcv(symbol, range_)
+            if cached is not None:
+                df, name = cached
+                print(f"[DataProvider] {symbol} {range_}: loaded from cache ({len(df)} candles).")
+                return df, name
+
+        key, name = self.resolve(symbol)
+        api  = upstox_client.HistoryV3Api(self._api_client)
+        to_d = date.today()
+
+        if range_ == "1w":
+            from_d, unit, interval = to_d - timedelta(days=120),  "days",  "1"  # enough for Ichimoku
+        elif range_ == "1m":
+            from_d, unit, interval = to_d - timedelta(days=120),  "days",  "1"  # enough for Ichimoku
+        elif range_ == "5y":
+            from_d, unit, interval = to_d - timedelta(days=1825), "weeks", "1"
+        else:  # default 1y
+            from_d, unit, interval = to_d - timedelta(days=365),  "days",  "1"
+
+        print(f"[DataProvider] Fetching {range_} history for {symbol} …")
+        resp = api.get_historical_candle_data1(
+            instrument_key=key,
+            unit=unit, interval=interval,
+            to_date=to_d.strftime("%Y-%m-%d"),
+            from_date=from_d.strftime("%Y-%m-%d"),
+        )
+
+        raw_candles = resp.data.candles
+        if not raw_candles:
+            raise RuntimeError(f"No historical data returned for {symbol}.")
+
+        df = pd.DataFrame(
+            raw_candles,
+            columns=["time", "open", "high", "low", "close", "volume", "oi"],
+        )
+        df["time"] = pd.to_datetime(df["time"])
+        df = df.set_index("time")[["open", "high", "low", "close", "volume"]]
+        df = df.sort_index()
+
+        if self._cache:
+            self._cache.set_ohlcv(symbol, range_, df, name)
+
+        return df, name
