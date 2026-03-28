@@ -283,3 +283,103 @@ class DataProvider:
             self._cache.set_ohlcv(symbol, range_, df, name)
 
         return df, name
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # 3. LIVE STREAMING  (Upstox MarketDataStreamerV3 with auto-reconnect)
+    # ──────────────────────────────────────────────────────────────────────────
+    def start_stream(
+        self,
+        instrument_keys: list[str],
+        on_tick_callback,
+        on_error_callback=None,
+    ):
+        """
+        Connect to Upstox WebSocket and call on_tick_callback on every tick.
+        Automatically reconnects with exponential backoff on disconnect.
+        Runs entirely in a daemon background thread.
+        """
+        # Signal any existing stream thread to stop cleanly
+        if self._stop_flag:
+            self._stop_flag.set()
+
+        stop_flag = threading.Event()
+        self._stop_flag = stop_flag
+
+        def _on_message(message: dict):
+            feeds = message.get("feeds", {})
+            if not feeds:
+                print(f"[DataProvider] WS msg (no feeds): {str(message)[:200]}")
+            for ikey, feed in feeds.items():
+                try:
+                    mff  = feed.get("fullFeed")["marketFF"]
+                    ltpc = mff["ltpc"]
+                    ltp  = float(ltpc.get("ltp", 0))
+                    vol  = int(mff.get("v", 0))
+                    bid  = float(ltpc.get("tbq", ltp))
+                    ask  = float(ltpc.get("tsq", ltp))
+                    sym  = self._key_to_symbol.get(ikey, ikey)
+                    print(f"[DataProvider] TICK {sym}: ltp={ltp} vol={vol}")
+                    on_tick_callback(sym, ltp, vol, bid, ask)
+                except (KeyError, TypeError, ValueError) as e:
+                    print(f"[DataProvider] Parse error for {ikey}: {e} | feed keys: {list(feed.keys()) if isinstance(feed, dict) else type(feed)}")
+
+        def _run_streamer():
+            reconnect_delay = 5   # seconds; doubles on each failed attempt, max 60
+
+            while not stop_flag.is_set():
+                closed_event = threading.Event()
+
+                streamer = upstox_client.MarketDataStreamerV3(
+                    upstox_client.ApiClient(self._config)
+                )
+                self._streamer = streamer
+
+                def _on_open_inner():
+                    nonlocal reconnect_delay
+                    reconnect_delay = 5   # reset to base on successful connect
+                    print(f"[DataProvider] Stream opened. Subscribing to {instrument_keys}")
+                    streamer.subscribe(instrument_keys, "full")
+
+                def _on_close_inner(*args):
+                    print("[DataProvider] Stream closed.")
+                    self._streamer = None
+                    closed_event.set()
+
+                def _on_error_inner(*args):
+                    err = args[0] if args else "unknown error"
+                    print(f"[DataProvider] Stream error: {err}")
+                    if on_error_callback:
+                        on_error_callback(err)
+                    closed_event.set()
+
+                streamer.on("open",    _on_open_inner)
+                streamer.on("message", _on_message)
+                streamer.on("close",   _on_close_inner)
+                streamer.on("error",   _on_error_inner)
+
+                print("[DataProvider] Connecting to Upstox stream...")
+                streamer.connect()  # non-blocking; SDK manages its own WS thread
+
+                # Block this thread until the socket closes
+                closed_event.wait()
+
+                if not stop_flag.is_set():
+                    print(f"[DataProvider] Reconnecting in {reconnect_delay}s…")
+                    # Use stop_flag.wait so we wake immediately if stop is requested
+                    stop_flag.wait(timeout=reconnect_delay)
+                    reconnect_delay = min(reconnect_delay * 2, 60)
+
+            print("[DataProvider] Stream thread exiting (stop requested).")
+
+        t = threading.Thread(target=_run_streamer, daemon=True, name="upstox-stream")
+        t.start()
+
+    def stop_stream(self):
+        if self._stop_flag:
+            self._stop_flag.set()
+        if self._streamer:
+            try:
+                self._streamer.close()
+            except Exception:
+                pass
+            self._streamer = None
