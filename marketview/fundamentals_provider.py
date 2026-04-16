@@ -456,3 +456,79 @@ class FundamentalsProvider:
         log.info("[Fundamentals] Cash flow stored for %s (%d rows).", sym, len(rows))
         return rows
 
+    # ── Internal: PostgreSQL reads ────────────────────────────────────────────
+
+    def _read_fundamentals(self, symbol: str) -> Optional[dict]:
+        try:
+            with _get_conn() as conn:
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute(
+                        "SELECT * FROM fundamentals WHERE symbol = %s",
+                        (symbol.upper(),)
+                    )
+                    row = cur.fetchone()
+            return dict(row) if row else None
+        except Exception as e:
+            log.error("[Fundamentals] DB read error: %s", e)
+            return None
+
+    def _read_quarterly(self, symbol: str) -> list:
+        try:
+            with _get_conn() as conn:
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute("""
+                        SELECT * FROM quarterly_results
+                        WHERE symbol = %s
+                        ORDER BY period DESC
+                        LIMIT 12
+                    """, (symbol.upper(),))
+                    return [dict(r) for r in cur.fetchall()]
+        except Exception as e:
+            log.error("[Fundamentals] DB quarterly read error: %s", e)
+            return []
+
+    def _read_annual(self, symbol: str) -> list:
+        try:
+            with _get_conn() as conn:
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute("""
+                        SELECT * FROM annual_results
+                        WHERE symbol = %s
+                        ORDER BY year DESC
+                        LIMIT 10
+                    """, (symbol.upper(),))
+                    return [dict(r) for r in cur.fetchall()]
+        except Exception as e:
+            log.error("[Fundamentals] DB annual read error: %s", e)
+            return []
+
+    def _read_balance_sheet(self, symbol: str) -> list:
+        try:
+            with _get_conn() as conn:
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute("""
+                        SELECT * FROM balance_sheet
+                        WHERE symbol = %s
+                        ORDER BY year DESC
+                        LIMIT 10
+                    """, (symbol.upper(),))
+                    return [dict(r) for r in cur.fetchall()]
+        except Exception as e:
+            log.error("[Fundamentals] DB balance sheet read error: %s", e)
+            return []
+
+    def _read_cashflow(self, symbol: str) -> list:
+        try:
+            with _get_conn() as conn:
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute("""
+                        SELECT * FROM cash_flow
+                        WHERE symbol = %s
+                        ORDER BY year DESC
+                        LIMIT 10
+                    """, (symbol.upper(),))
+                    return [dict(r) for r in cur.fetchall()]
+        except Exception as e:
+            log.error("[Fundamentals] DB cash flow read error: %s", e)
+            return []
+
