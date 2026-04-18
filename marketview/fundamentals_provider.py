@@ -532,3 +532,75 @@ class FundamentalsProvider:
             log.error("[Fundamentals] DB cash flow read error: %s", e)
             return []
 
+    # ── Public async API ──────────────────────────────────────────────────────
+
+    async def get_fundamentals(self, symbol: str) -> Optional[dict]:
+        """
+        Return key ratio dict for a symbol.
+        Refreshes from yfinance if stale or missing.
+        """
+        if self._is_fundamentals_stale(symbol):
+            await asyncio.to_thread(self._fetch_and_store_fundamentals, symbol)
+        data = await asyncio.to_thread(self._read_fundamentals, symbol)
+        if data and "fetched_at" in data and data["fetched_at"]:
+            data["fetched_at"] = data["fetched_at"].isoformat()
+        return data
+
+    async def get_quarterly(self, symbol: str) -> list:
+        """
+        Return list of quarterly P&L dicts, most recent first.
+        Refreshes from yfinance if stale.
+        """
+        if self._is_quarterly_stale(symbol):
+            await asyncio.to_thread(self._fetch_and_store_quarterly, symbol)
+        rows = await asyncio.to_thread(self._read_quarterly, symbol)
+        # Convert date objects to strings for JSON serialisation
+        for r in rows:
+            if r.get("period"):
+                r["period"] = str(r["period"])
+        return rows
+
+    async def get_annual(self, symbol: str) -> list:
+        """Return list of annual P&L dicts, most recent first."""
+        if self._is_annual_stale(symbol):
+            await asyncio.to_thread(self._fetch_and_store_annual, symbol)
+        return await asyncio.to_thread(self._read_annual, symbol)
+
+    async def get_balance_sheet(self, symbol: str) -> list:
+        """Return list of annual balance sheet dicts, most recent first."""
+        if self._is_annual_stale(symbol):
+            await asyncio.to_thread(self._fetch_and_store_balance_sheet, symbol)
+        return await asyncio.to_thread(self._read_balance_sheet, symbol)
+
+    async def get_cashflow(self, symbol: str) -> list:
+        """Return list of annual cash flow dicts, most recent first."""
+        if self._is_annual_stale(symbol):
+            await asyncio.to_thread(self._fetch_and_store_cashflow, symbol)
+        return await asyncio.to_thread(self._read_cashflow, symbol)
+
+    async def get_all(self, symbol: str) -> dict:
+        """
+        Convenience method: fetch all fundamental data for a symbol in one call.
+        Returns a dict with keys: fundamentals, quarterly, annual, balance_sheet, cashflow.
+        Runs the five fetches concurrently.
+        """
+        results = await asyncio.gather(
+            self.get_fundamentals(symbol),
+            self.get_quarterly(symbol),
+            self.get_annual(symbol),
+            self.get_balance_sheet(symbol),
+            self.get_cashflow(symbol),
+            return_exceptions=True,
+        )
+
+        def _safe_result(r, default):
+            return r if not isinstance(r, Exception) else default
+
+        return {
+            "symbol":        symbol.upper(),
+            "fundamentals":  _safe_result(results[0], None),
+            "quarterly":     _safe_result(results[1], []),
+            "annual":        _safe_result(results[2], []),
+            "balance_sheet": _safe_result(results[3], []),
+            "cashflow":      _safe_result(results[4], []),
+        }
