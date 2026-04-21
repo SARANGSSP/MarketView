@@ -168,3 +168,186 @@ def require_auth(handler):
         return await handler(request)
     return wrapper
 
+# ── GOOGLE OAUTH ──────────────────────────────────────────────────────────────
+async def google_login(request: web.Request):
+    params = urllib.parse.urlencode({
+        "client_id":     GOOGLE_CLIENT_ID,
+        "redirect_uri":  GOOGLE_REDIRECT_URI,
+        "response_type": "code",
+        "scope":         "openid email profile",
+        "access_type":   "online",
+    })
+    raise web.HTTPFound(f"https://accounts.google.com/o/oauth2/v2/auth?{params}")
+
+
+async def google_callback(request: web.Request):
+    code = request.query.get("code")
+    if not code:
+        return web.Response(text="Missing code", status=400)
+
+    # Exchange code for tokens
+    async with aiohttp.ClientSession() as session:
+        async with session.post("https://oauth2.googleapis.com/token", data={
+            "code":          code,
+            "client_id":     GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "redirect_uri":  GOOGLE_REDIRECT_URI,
+            "grant_type":    "authorization_code",
+        }) as resp:
+            token_data = await resp.json()
+
+    if "error" in token_data:
+        return web.Response(text=f"OAuth error: {token_data['error']}", status=400)
+
+    # Get user info
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            "https://www.googleapis.com/oauth2/v3/userinfo",
+            headers={"Authorization": f"Bearer {token_data['access_token']}"}
+        ) as resp:
+            user_info = await resp.json()
+
+    google_id = user_info.get("sub")
+    email     = user_info.get("email", "")
+    name      = user_info.get("name", "")
+    picture   = user_info.get("picture", "")
+
+    # Upsert user in DB
+    with _get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                INSERT INTO mv_users (google_id, email, name, picture)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (google_id) DO UPDATE
+                    SET email=%s, name=%s, picture=%s
+                RETURNING id, google_id, email, name, picture, whatsapp
+            """, (google_id, email, name, picture, email, name, picture))
+            user = dict(cur.fetchone())
+        conn.commit()
+
+    response = web.HTTPFound("/portfolio.html")
+    _set_session(response, user)
+    return response
+
+
+async def google_logout(request: web.Request):
+    token = request.cookies.get("mv_session")
+    if token:
+        _sessions.pop(token, None)
+        _delete_session(token)
+    response = web.HTTPFound("/")
+    response.del_cookie("mv_session")
+    return response
+
+
+async def get_me(request: web.Request):
+    user = _get_session(request)
+    if not user:
+        return web.json_response({"authenticated": False})
+    return web.json_response({
+        "authenticated": True,
+        "id":      user["id"],
+        "email":   user["email"],
+        "name":    user["name"],
+        "picture": user.get("picture"),
+        "whatsapp": user.get("whatsapp"),
+    })
+
+# ── UPDATE WHATSAPP NUMBER ────────────────────────────────────────────────────
+@require_auth
+async def update_whatsapp(request: web.Request):
+    user = request["user"]
+    body = await request.json()
+    number = body.get("whatsapp", "").strip()
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE mv_users SET whatsapp=%s WHERE id=%s", (number, user["id"]))
+        conn.commit()
+    # Update session
+    for sess in _sessions.values():
+        if sess.get("id") == user["id"]:
+            sess["whatsapp"] = number
+    return web.json_response({"ok": True})
+
+# ── PORTFOLIO ENDPOINTS ───────────────────────────────────────────────────────
+@require_auth
+async def list_portfolio(request: web.Request):
+    user = request["user"]
+    with _get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT id, symbol, quantity, buy_price, notes, added_at
+                FROM mv_portfolio WHERE user_id=%s ORDER BY added_at DESC
+            """, (user["id"],))
+            rows = [dict(r) for r in cur.fetchall()]
+    # Convert timestamps
+    for r in rows:
+        r["added_at"] = r["added_at"].isoformat() if r["added_at"] else None
+    return web.json_response(rows)
+
+
+@require_auth
+async def add_portfolio(request: web.Request):
+    user = request["user"]
+    body = await request.json()
+    symbol    = body.get("symbol", "").upper().strip()
+    quantity  = float(body.get("quantity", 0))
+    buy_price = float(body.get("buy_price", 0))
+    notes     = body.get("notes", "")
+
+    if not symbol or quantity <= 0 or buy_price <= 0:
+        return web.json_response({"error": "symbol, quantity, buy_price required"}, status=400)
+
+    with _get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            try:
+                cur.execute("""
+                    INSERT INTO mv_portfolio (user_id, symbol, quantity, buy_price, notes)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (user_id, symbol) DO UPDATE
+                        SET quantity=%s, buy_price=%s, notes=%s
+                    RETURNING id, symbol, quantity, buy_price, notes
+                """, (user["id"], symbol, quantity, buy_price, notes,
+                      quantity, buy_price, notes))
+                row = dict(cur.fetchone())
+            except Exception as e:
+                return web.json_response({"error": str(e)}, status=500)
+        conn.commit()
+    return web.json_response(row, status=201)
+
+
+@require_auth
+async def update_portfolio(request: web.Request):
+    user = request["user"]
+    pid  = int(request.match_info["id"])
+    body = await request.json()
+
+    fields = []
+    vals   = []
+    if "quantity" in body:
+        fields.append("quantity=%s"); vals.append(float(body["quantity"]))
+    if "buy_price" in body:
+        fields.append("buy_price=%s"); vals.append(float(body["buy_price"]))
+    if "notes" in body:
+        fields.append("notes=%s"); vals.append(body["notes"])
+    if not fields:
+        return web.json_response({"error": "Nothing to update"}, status=400)
+
+    vals += [pid, user["id"]]
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"UPDATE mv_portfolio SET {','.join(fields)} WHERE id=%s AND user_id=%s", vals)
+        conn.commit()
+    return web.json_response({"ok": True})
+
+
+@require_auth
+async def delete_portfolio(request: web.Request):
+    user = request["user"]
+    pid  = int(request.match_info["id"])
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM mv_portfolio WHERE id=%s AND user_id=%s", (pid, user["id"]))
+        conn.commit()
+    return web.json_response({"ok": True})
+
