@@ -351,3 +351,141 @@ async def delete_portfolio(request: web.Request):
         conn.commit()
     return web.json_response({"ok": True})
 
+# ── ALERT ENDPOINTS ───────────────────────────────────────────────────────────
+@require_auth
+async def list_alerts(request: web.Request):
+    user = request["user"]
+    with _get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT id, symbol, condition, target, active, triggered_at, created_at
+                FROM mv_alerts WHERE user_id=%s ORDER BY created_at DESC
+            """, (user["id"],))
+            rows = [dict(r) for r in cur.fetchall()]
+    for r in rows:
+        r["triggered_at"] = r["triggered_at"].isoformat() if r["triggered_at"] else None
+        r["created_at"]   = r["created_at"].isoformat()   if r["created_at"]   else None
+    return web.json_response(rows)
+
+
+@require_auth
+async def create_alert(request: web.Request):
+    user = request["user"]
+    body = await request.json()
+    symbol    = body.get("symbol", "").upper().strip()
+    condition = body.get("condition", "")  # above | below | pct_change | volume_spike
+    target    = float(body.get("target", 0))
+
+    if not symbol or condition not in ("above", "below", "pct_change", "volume_spike"):
+        return web.json_response({"error": "symbol + valid condition required"}, status=400)
+
+    with _get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                INSERT INTO mv_alerts (user_id, symbol, condition, target)
+                VALUES (%s, %s, %s, %s) RETURNING id, symbol, condition, target, active
+            """, (user["id"], symbol, condition, target))
+            row = dict(cur.fetchone())
+        conn.commit()
+    return web.json_response(row, status=201)
+
+
+@require_auth
+async def delete_alert(request: web.Request):
+    user = request["user"]
+    aid  = int(request.match_info["id"])
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM mv_alerts WHERE id=%s AND user_id=%s", (aid, user["id"]))
+        conn.commit()
+    return web.json_response({"ok": True})
+
+
+@require_auth
+async def toggle_alert(request: web.Request):
+    user = request["user"]
+    aid  = int(request.match_info["id"])
+    with _get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                UPDATE mv_alerts SET active = NOT active
+                WHERE id=%s AND user_id=%s RETURNING active
+            """, (aid, user["id"]))
+            row = cur.fetchone()
+        conn.commit()
+    return web.json_response({"active": row["active"] if row else False})
+
+# ── WHATSAPP SENDER ───────────────────────────────────────────────────────────
+async def send_whatsapp(to: str, message: str):
+    """Send WhatsApp message via Twilio sandbox."""
+    if not TWILIO_SID or not TWILIO_TOKEN:
+        log.warning("[Alert] Twilio not configured — skipping WhatsApp")
+        return
+    if not to.startswith("whatsapp:"):
+        to = f"whatsapp:{to}"
+    url = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_SID}/Messages.json"
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url,
+            data={"From": TWILIO_FROM, "To": to, "Body": message},
+            auth=aiohttp.BasicAuth(TWILIO_SID, TWILIO_TOKEN)
+        ) as resp:
+            result = await resp.json()
+            if resp.status >= 400:
+                log.error("[Alert] Twilio error: %s", result)
+            else:
+                log.info("[Alert] WhatsApp sent to %s", to)
+
+# ── ALERT CHECKER (called on every tick from server.py) ──────────────────────
+async def check_alerts(symbol: str, ltp: float, pct_change: float, volume: int, avg_volume: float):
+    """
+    Check all active alerts for this symbol and trigger if conditions met.
+    Called from the aggregator loop on every new candle.
+    """
+    try:
+        with _get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT a.id, a.condition, a.target, a.symbol,
+                           u.whatsapp, u.email, u.name
+                    FROM mv_alerts a
+                    JOIN mv_users u ON u.id = a.user_id
+                    WHERE a.symbol=%s AND a.active=TRUE AND a.triggered_at IS NULL
+                """, (symbol,))
+                alerts = cur.fetchall()
+
+            triggered_ids = []
+            for alert in alerts:
+                cond   = alert["condition"]
+                target = alert["target"]
+                hit    = False
+
+                if cond == "above" and ltp >= target:
+                    hit = True
+                    msg = f"🚨 *MarketView Alert*\n{symbol} crossed ₹{target:.2f} UP\nCurrent: ₹{ltp:.2f}"
+                elif cond == "below" and ltp <= target:
+                    hit = True
+                    msg = f"🚨 *MarketView Alert*\n{symbol} dropped below ₹{target:.2f}\nCurrent: ₹{ltp:.2f}"
+                elif cond == "pct_change" and abs(pct_change) >= target:
+                    hit = True
+                    direction = "▲" if pct_change > 0 else "▼"
+                    msg = f"🚨 *MarketView Alert*\n{symbol} moved {direction}{abs(pct_change):.2f}%\nTarget: ±{target}% | LTP: ₹{ltp:.2f}"
+                elif cond == "volume_spike" and avg_volume > 0 and volume >= avg_volume * (target or 1.5):
+                    hit = True
+                    msg = f"🚨 *MarketView Alert*\n{symbol} volume spike!\nVol: {volume:,} ({volume/avg_volume:.1f}x avg) | LTP: ₹{ltp:.2f}"
+
+                if hit:
+                    triggered_ids.append(alert["id"])
+                    if alert.get("whatsapp"):
+                        asyncio.create_task(send_whatsapp(alert["whatsapp"], msg))
+
+            if triggered_ids:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        UPDATE mv_alerts SET triggered_at=NOW(), active=FALSE
+                        WHERE id = ANY(%s)
+                    """, (triggered_ids,))
+                conn.commit()
+
+    except Exception as e:
+        log.error("[AlertChecker] %s: %s", symbol, e)
+
