@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MarketView – Portfolio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:        #080d17;
+    --surface:   #0d1526;
+    --surface2:  #111e35;
+    --border:    #1c2e4a;
+    --accent:    #4a90e2;
+    --accent2:   #00d4aa;
+    --red:       #f05e5e;
+    --green:     #3dd68c;
+    --yellow:    #f5c842;
+    --text:      #e8eef8;
+    --muted:     #5a7399;
+    --mono:      'Space Mono', monospace;
+    --sans:      'DM Sans', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: var(--sans); min-height: 100vh; }
+
+  /* ── NAV ── */
+  nav {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 32px; height: 60px;
+    background: var(--surface); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 100;
+  }
+  .nav-logo { display: flex; align-items: center; gap: 10px; text-decoration: none; }
+  .nav-logo-icon { width: 28px; height: 28px; background: var(--accent); border-radius: 6px;
+    display: flex; align-items: center; justify-content: center; font-family: var(--mono); font-size: 13px; font-weight: 700; color: #fff; }
+  .nav-logo-text { font-family: var(--mono); font-size: 14px; font-weight: 700; color: var(--text); letter-spacing: 1px; }
+  .nav-links { display: flex; align-items: center; gap: 8px; }
+  .nav-link { padding: 6px 14px; border-radius: 6px; text-decoration: none; font-size: 13px;
+    color: var(--muted); transition: all .2s; }
+  .nav-link:hover, .nav-link.active { color: var(--text); background: var(--surface2); }
+  .nav-user { display: flex; align-items: center; gap: 10px; }
+  .user-avatar { width: 32px; height: 32px; border-radius: 50%; border: 2px solid var(--accent); object-fit: cover; }
+  .user-name { font-size: 13px; color: var(--muted); }
+  .btn-logout { padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border);
+    background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; transition: all .2s; font-family: var(--sans); }
+  .btn-logout:hover { border-color: var(--red); color: var(--red); }
+
+  /* ── LOGIN SCREEN ── */
+  #login-screen {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    min-height: calc(100vh - 60px); gap: 24px;
+  }
+  .login-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
+    padding: 48px 56px; text-align: center; max-width: 420px; width: 90%;
+  }
+  .login-card h1 { font-family: var(--mono); font-size: 22px; margin-bottom: 8px; }
+  .login-card p { color: var(--muted); font-size: 14px; margin-bottom: 32px; line-height: 1.6; }
+  .btn-google {
+    display: flex; align-items: center; justify-content: center; gap: 12px;
+    padding: 14px 28px; border-radius: 10px; border: 1px solid var(--border);
+    background: var(--surface2); color: var(--text); font-size: 14px; font-weight: 500;
+    cursor: pointer; transition: all .2s; text-decoration: none; width: 100%;
+  }
+  .btn-google:hover { border-color: var(--accent); background: rgba(74,144,226,.1); }
+  .btn-google svg { flex-shrink: 0; }
+
+  /* ── MAIN LAYOUT ── */
+  #app { display: none; }
+  .container { max-width: 1300px; margin: 0 auto; padding: 32px 24px; }
+
+  /* ── SUMMARY CARDS ── */
+  .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 32px; }
+  .summary-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 20px 24px;
+  }
+  .summary-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+  .summary-value { font-family: var(--mono); font-size: 22px; font-weight: 700; }
+  .summary-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .pos { color: var(--green); }
+  .neg { color: var(--red); }
+
+  /* ── TABS ── */
+  .tabs { display: flex; gap: 4px; margin-bottom: 24px; border-bottom: 1px solid var(--border); }
+  .tab { padding: 10px 20px; font-size: 13px; font-weight: 500; color: var(--muted);
+    cursor: pointer; border-bottom: 2px solid transparent; transition: all .2s; }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  /* ── SECTION HEADER ── */
+  .section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+  .section-title { font-family: var(--mono); font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+
+  /* ── BUTTONS ── */
+  .btn { padding: 8px 18px; border-radius: 8px; border: none; font-size: 13px; font-weight: 500;
+    cursor: pointer; transition: all .2s; font-family: var(--sans); }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { background: #3a7fcf; }
+  .btn-sm { padding: 5px 12px; font-size: 12px; border-radius: 6px; }
+  .btn-danger { background: transparent; border: 1px solid var(--red); color: var(--red); }
+  .btn-danger:hover { background: rgba(240,94,94,.15); }
+  .btn-ghost { background: transparent; border: 1px solid var(--border); color: var(--muted); }
+  .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* ── TABLE ── */
+  .table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  table { width: 100%; border-collapse: collapse; }
+  th { padding: 12px 16px; text-align: left; font-size: 11px; font-weight: 600;
+    color: var(--muted); text-transform: uppercase; letter-spacing: 1px;
+    border-bottom: 1px solid var(--border); background: var(--surface2); }
+  td { padding: 14px 16px; font-size: 13px; border-bottom: 1px solid var(--border); }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(74,144,226,.04); }
+  .sym-cell { font-family: var(--mono); font-weight: 700; color: var(--accent); font-size: 14px; }
+  .mono { font-family: var(--mono); }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+  .badge-green { background: rgba(61,214,140,.15); color: var(--green); }
+  .badge-red   { background: rgba(240,94,94,.15);  color: var(--red); }
+  .badge-yellow { background: rgba(245,200,66,.15); color: var(--yellow); }
+  .action-btns { display: flex; gap: 6px; }
+
+  /* ── EMPTY STATE ── */
+  .empty { padding: 48px; text-align: center; color: var(--muted); font-size: 14px; }
+  .empty-icon { font-size: 36px; margin-bottom: 12px; }
+
+  /* ── MODAL ── */
+  .modal-backdrop {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,.7);
+    z-index: 1000; align-items: center; justify-content: center;
+  }
+  .modal-backdrop.open { display: flex; }
+  .modal {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
+    padding: 32px; width: 420px; max-width: 95vw;
+  }
+  .modal h2 { font-family: var(--mono); font-size: 16px; margin-bottom: 24px; }
+  .form-group { margin-bottom: 16px; }
+  .form-label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: .5px; }
+  .form-input {
+    width: 100%; padding: 10px 14px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--surface2);
+    color: var(--text); font-size: 14px; font-family: var(--sans); outline: none;
+    transition: border-color .2s;
+  }
+  .form-input:focus { border-color: var(--accent); }
+  select.form-input { cursor: pointer; }
+  .modal-footer { display: flex; gap: 10px; justify-content: flex-end; margin-top: 24px; }
+
+  /* ── WHATSAPP SETUP ── */
+  .whatsapp-banner {
+    background: rgba(0,212,170,.08); border: 1px solid rgba(0,212,170,.25);
+    border-radius: 10px; padding: 14px 20px; margin-bottom: 24px;
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    flex-wrap: wrap;
+  }
+  .whatsapp-banner-text { font-size: 13px; color: var(--accent2); }
+  .whatsapp-input-row { display: flex; gap: 8px; }
+  .whatsapp-input { padding: 7px 12px; border-radius: 7px; border: 1px solid rgba(0,212,170,.3);
+    background: var(--surface2); color: var(--text); font-size: 13px; width: 200px; outline: none; }
+  .whatsapp-input:focus { border-color: var(--accent2); }
+
+  /* ── ALERT CONDITION LABEL ── */
+  .cond-label { font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 4px; }
+  .cond-above  { background: rgba(61,214,140,.15); color: var(--green); }
+  .cond-below  { background: rgba(240,94,94,.15);  color: var(--red); }
+  .cond-pct    { background: rgba(74,144,226,.15); color: var(--accent); }
+  .cond-vol    { background: rgba(245,200,66,.15); color: var(--yellow); }
+  .status-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; margin-right: 5px; }
+  .dot-active   { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .dot-inactive { background: var(--muted); }
+
+  /* ── LOADING ── */
+  .spinner { display: inline-block; width: 18px; height: 18px; border: 2px solid var(--border);
+    border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+
+  /* ── SPARKLINE MINI ── */
+  .pnl-bar { height: 3px; border-radius: 2px; margin-top: 4px; min-width: 40px; max-width: 80px; }
+
+/* ── Search Dropdown ── */
+.search-dropdown {
+  position: fixed;
+  background: #1e2130;
+  border: 1px solid #3a3f55;
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+  z-index: 9999;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.sd-item {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 14px;
+  cursor: pointer;
+  border-bottom: 1px solid #2a2f45;
+}
+.sd-item:hover { background: #2a3050; }
+.sd-sym { font-weight: 700; color: #7eb8f7; min-width: 100px; }
+.sd-name { color: #a0a8c0; font-size: 0.85em; }
+@media (max-width: 768px) {
+  #tab-holdings .table-wrap thead, #tab-alerts .table-wrap thead { display: none; }
+  #tab-holdings .table-wrap table, #tab-holdings .table-wrap tbody, #tab-alerts .table-wrap table, #tab-alerts .table-wrap tbody { display: block; min-width: 0; width: 100%; }
+  #tab-holdings .table-wrap tbody tr, #tab-alerts .table-wrap tbody tr { display: grid; grid-template-columns: 1fr 1fr; border-bottom: 1px solid var(--border); padding: 12px 14px; }
+  #tab-holdings .table-wrap tbody tr:last-child, #tab-alerts .table-wrap tbody tr:last-child { border-bottom: none; }
+  #tab-holdings .table-wrap tbody td, #tab-alerts .table-wrap tbody td { display: block; padding: 3px 6px; border-bottom: none; font-size: 13px; }
+  #tab-holdings tbody td:nth-child(1), #tab-alerts tbody td:nth-child(1) { grid-column: 1 / -1; font-size: 15px; font-weight: 700; padding: 0 6px 6px; border-bottom: 1px solid var(--border); margin-bottom: 6px; }
+  #tab-holdings tbody td:nth-child(2)::before { content: "Qty: "; color: var(--muted); font-size: 11px; }
+  #tab-holdings tbody td:nth-child(3)::before { content: "Avg Buy: "; color: var(--muted); font-size: 11px; }
+  #tab-holdings tbody td:nth-child(4)::before { content: "LTP: "; color: var(--muted); font-size: 11px; }
+  #tab-holdings tbody td:nth-child(5)::before { content: "Invested: "; color: var(--muted); font-size: 11px; }
+  #tab-holdings tbody td:nth-child(6)::before { content: "Value: "; color: var(--muted); font-size: 11px; }
+  #tab-holdings tbody td:nth-child(7)::before { content: "P&L: "; color: var(--muted); font-size: 11px; }
+  #tab-holdings tbody td:nth-child(8)::before { content: "Day Chg: "; color: var(--muted); font-size: 11px; }
+  #tab-holdings tbody td:nth-child(9)::before { content: "52W H/L: "; color: var(--muted); font-size: 11px; }
+  #tab-holdings tbody td:nth-child(10), #tab-alerts tbody td:nth-child(6) { grid-column: 1 / -1; padding-top: 8px; margin-top: 4px; border-top: 1px solid var(--border); }
+  #tab-holdings tbody td:nth-child(10) .action-btns, #tab-alerts tbody td:nth-child(6) .action-btns { flex-direction: row; gap: 8px; }
+  #tab-holdings tbody td:nth-child(10) .btn, #tab-alerts tbody td:nth-child(6) .btn { flex: 1; text-align: center; min-height: 36px; }
+  #tab-alerts tbody td:nth-child(2)::before { content: "Condition: "; color: var(--muted); font-size: 11px; }
+  #tab-alerts tbody td:nth-child(3)::before { content: "Target: "; color: var(--muted); font-size: 11px; }
+  #tab-alerts tbody td:nth-child(4)::before { content: "Status: "; color: var(--muted); font-size: 11px; }
+  #tab-alerts tbody td:nth-child(5)::before { content: "Created: "; color: var(--muted); font-size: 11px; }
+  #tab-holdings table, #tab-alerts table { min-width: 0 !important; }
+  table { min-width: 0 !important; }
+}
+</style>
+</head>
+<body>
+
+<nav>
+  <a href="/" class="nav-logo">
+    
+    <span class="nav-logo-text">MarketView</span>
+  </a>
+  <div class="nav-links">
+    <a href="/" class="nav-link">Charts</a>
+    <a href="/portfolio.html" class="nav-link active">Portfolio</a>
+  </div>
+  <div class="nav-user" id="nav-user" style="display:none">
+    <img class="user-avatar" id="user-avatar" src="" alt="">
+    <span class="user-name" id="user-name-nav"></span>
+    <button class="btn-logout" onclick="logout()">Sign out</button>
+  </div>
+</nav>
+
+<!-- LOGIN SCREEN -->
+<div id="login-screen">
+  <div class="login-card">
+    <div style="font-size:40px;margin-bottom:16px">📊</div>
+    <h1>Portfolio & Alerts</h1>
+    <p>Track your holdings, monitor P&amp;L in real-time, and get WhatsApp alerts when your targets are hit.</p>
+    <a href="/auth/google/login" class="btn-google">
+      <svg width="20" height="20" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/><path fill="none" d="M0 0h48v48H0z"/></svg>
+      Continue with Google
+    </a>
+  </div>
+</div>
+
+<!-- MAIN APP -->
+<div id="app">
+  <div class="container">
+
+    <!-- WhatsApp Setup Banner -->
+    <div class="whatsapp-banner" id="whatsapp-banner">
+      <span class="whatsapp-banner-text" id="wa-banner-text">📱 Add your WhatsApp number to receive price alerts</span>
+      <div class="whatsapp-input-row" id="wa-input-row">
+        <input class="whatsapp-input" id="wa-input" placeholder="+91 9876543210" type="tel">
+        <button class="btn btn-sm btn-ghost" onclick="saveWhatsapp()" style="color:var(--accent2);border-color:var(--accent2)">Save</button>
+      </div>
+      <div id="wa-saved-row" style="display:none;align-items:center;gap:16px">
+        <a href="https://wa.me/14155238886?text=join%20citizen-expression" target="_blank" style="color:#25D366;font-size:13px">📱 Join WhatsApp sandbox</a>
+        <a href="#" onclick="editWhatsapp(); return false;" style="color:var(--accent2);font-size:13px">Change number</a>
+      </div>
+    </div>
+
+    <!-- Summary Cards -->
+    <div class="summary-grid" id="summary-grid">
+      <div class="summary-card">
+        <div class="summary-label">Invested</div>
+        <div class="summary-value mono" id="s-invested">—</div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-label">Current Value</div>
+        <div class="summary-value mono" id="s-value">—</div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-label">P&amp;L</div>
+        <div class="summary-value mono" id="s-pnl">—</div>
+        <div class="summary-sub" id="s-pnl-pct"></div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-label">Day's Change</div>
+        <div class="summary-value mono" id="s-day">—</div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-label">Active Alerts</div>
+        <div class="summary-value mono" id="s-alerts">—</div>
+      </div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="tabs">
+      <div class="tab active" onclick="switchTab('holdings')">Holdings</div>
+      <div class="tab" onclick="switchTab('alerts')">Alerts</div>
+    </div>
+
+    <!-- Holdings Tab -->
+    <div class="tab-content active" id="tab-holdings">
+      <div class="section-header">
+        <span class="section-title">My Holdings</span>
+        <button class="btn btn-primary btn-sm" onclick="openAddHolding()">+ Add Stock</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Qty</th>
+              <th>Avg Buy</th>
+              <th>LTP</th>
+              <th>Invested</th>
+              <th>Value</th>
+              <th>P&amp;L</th>
+              <th>Day Change</th>
+              <th>52W H/L</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="holdings-body">
+            <tr><td colspan="10" class="empty"><div class="empty-icon">📂</div><div>No holdings yet. Add your first stock!</div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Alerts Tab -->
+    <div class="tab-content" id="tab-alerts">
+      <div class="section-header">
+        <span class="section-title">Price Alerts</span>
+        <button class="btn btn-primary btn-sm" onclick="openAddAlert()">+ Add Alert</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Condition</th>
+              <th>Target</th>
+              <th>Status</th>
+              <th>Created</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="alerts-body">
+            <tr><td colspan="6" class="empty"><div class="empty-icon">🔔</div><div>No alerts set. Create one to get WhatsApp notifications!</div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ADD HOLDING MODAL -->
+<div class="modal-backdrop" id="modal-holding">
+  <div class="modal">
+    <h2>Add Holding</h2>
+    <div class="form-group">
+      <label class="form-label">Symbol (NSE)</label>
+      <input class="form-input" id="h-symbol" placeholder="e.g. RELIANCE" style="text-transform:uppercase">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Quantity</label>
+      <input class="form-input" id="h-qty" type="number" placeholder="e.g. 10">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Average Buy Price (₹)</label>
+      <input class="form-input" id="h-price" type="number" placeholder="e.g. 2450.50">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Notes (optional)</label>
+      <input class="form-input" id="h-notes" placeholder="e.g. Long term hold">
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('modal-holding')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitHolding()">Add Holding</button>
+    </div>
+  </div>
+</div>
+
+<!-- ADD ALERT MODAL -->
+<div class="modal-backdrop" id="modal-alert">
+  <div class="modal">
+    <h2>Create Alert</h2>
+    <div class="form-group">
+      <label class="form-label">Symbol (NSE)</label>
+      <input class="form-input" id="a-symbol" placeholder="e.g. HDFCBANK" style="text-transform:uppercase">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Condition</label>
+      <select class="form-input" id="a-cond" onchange="updateAlertTargetLabel()">
+        <option value="above">Price goes above ▲</option>
+        <option value="below">Price drops below ▼</option>
+        <option value="pct_change">% Move (±)</option>
+        <option value="volume_spike">Volume spike (×avg)</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label" id="a-target-label">Target Price (₹)</label>
+      <input class="form-input" id="a-target" type="number" placeholder="e.g. 1500">
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('modal-alert')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitAlert()">Create Alert</button>
+    </div>
+  </div>
+</div>
+
+<script>
