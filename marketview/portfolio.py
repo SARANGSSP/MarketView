@@ -489,3 +489,200 @@ async def check_alerts(symbol: str, ltp: float, pct_change: float, volume: int, 
     except Exception as e:
         log.error("[AlertChecker] %s: %s", symbol, e)
 
+# ── DAILY SUMMARY HELPERS ────────────────────────────────────────────────────
+
+async def _get_all_whatsapp_users() -> list:
+    try:
+        with _get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT id, whatsapp, name FROM mv_users
+                    WHERE whatsapp IS NOT NULL AND whatsapp <> ''
+                """)
+                return cur.fetchall()
+    except Exception as e:
+        log.error("[Summary] Failed to fetch users: %s", e)
+        return []
+
+async def send_market_open_summary(user_id: int, whatsapp: str, name: str):
+    """09:15 IST: portfolio overview WhatsApp message."""
+    try:
+        from datetime import datetime
+        import zoneinfo
+        IST = zoneinfo.ZoneInfo("Asia/Kolkata")
+        now = datetime.now(IST)
+        date_str = now.strftime("%d %b %Y | %H:%M IST")
+        with _get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT symbol, quantity, buy_price FROM mv_portfolio WHERE user_id = %s ORDER BY symbol", (user_id,))
+                holdings = cur.fetchall()
+        if not holdings:
+            return
+        total = sum(h['quantity'] * h['buy_price'] for h in holdings)
+        sep = '-' * 32
+        rows = [
+            '{:<10} {:>5} {:>10} {:>10}'.format('Symbol', 'Qty', 'Buy Price', 'Invested'),
+            sep,
+        ]
+        for h in holdings:
+            invested = h['quantity'] * h['buy_price']
+            rows.append('{:<10} {:>5} {:>10} {:>10}'.format(
+                h['symbol'][:10],
+                int(h['quantity']),
+                'Rs.' + format(h['buy_price'], ',.0f'),
+                'Rs.' + format(invested, ',.0f')
+            ))
+        rows.append(sep)
+        rows.append('{:<16} {:>16}'.format('Total Invested', 'Rs.' + format(total, ',.0f')))
+        table = '```' + chr(10) + chr(10).join(rows) + chr(10) + '```'
+        parts = [
+            '*MarketView Portfolio Summary*',
+            date_str,
+            '',
+            table,
+            '',
+            'Login: https://stockmarketview.duckdns.org',
+        ]
+        await send_whatsapp(whatsapp, chr(10).join(parts))
+    except Exception as e:
+        log.error('[MarketOpen] user %s: %s', user_id, e)
+
+async def send_daily_pnl_summary(user_id: int, whatsapp: str, name: str):
+    """15:30 IST: end-of-day P&L WhatsApp message."""
+    try:
+        from datetime import datetime
+        import zoneinfo
+        IST = zoneinfo.ZoneInfo("Asia/Kolkata")
+        now = datetime.now(IST)
+        date_str = now.strftime("%d %b %Y | %H:%M IST")
+        with _get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT symbol, quantity, buy_price FROM mv_portfolio WHERE user_id = %s ORDER BY symbol", (user_id,))
+                holdings = cur.fetchall()
+        if not holdings:
+            return
+        import aiohttp as _aiohttp
+        ltp_map = {}
+        try:
+            async with _aiohttp.ClientSession() as session:
+                syms = [h['symbol'] for h in holdings]
+                async with session.get('http://localhost:8000/api/ltp?symbols=' + ','.join(syms)) as r:
+                    if r.status == 200:
+                        ltp_map = await r.json()
+        except Exception as e:
+            log.warning('[PnL] LTP fetch failed: %s', e)
+        total_invested = total_current = 0.0
+        sep = '-' * 36
+        rows = [
+            '{:<10} {:>8} {:>7} {:>9}'.format('Symbol', 'LTP', 'Chg%', 'P&L'),
+            sep,
+        ]
+        for h in holdings:
+            sym = h['symbol']; qty = h['quantity']; avg = h['buy_price']
+            ltp = ltp_map.get(sym, avg)
+            pnl = (ltp - avg) * qty
+            pct = ((ltp - avg) / avg * 100) if avg else 0
+            total_invested += qty * avg
+            total_current  += qty * ltp
+            pnl_str = ('+' if pnl >= 0 else '') + 'Rs.' + format(abs(pnl), ',.0f')
+            pct_str = ('+' if pct >= 0 else '') + format(pct, '.1f') + '%'
+            rows.append('{:<10} {:>8} {:>7} {:>9}'.format(
+                sym[:10],
+                'Rs.' + format(ltp, ',.0f'),
+                pct_str,
+                pnl_str
+            ))
+        total_pnl = total_current - total_invested
+        total_pct = (total_pnl / total_invested * 100) if total_invested else 0
+        rows.append(sep)
+        rows.append('{:<18} {:>16}'.format('Portfolio Value', 'Rs.' + format(total_current, ',.0f')))
+        rows.append('{:<18} {:>16}'.format('Total P&L', ('+' if total_pnl >= 0 else '') + 'Rs.' + format(abs(total_pnl), ',.0f')))
+        rows.append('{:<18} {:>16}'.format('Day Return', ('+' if total_pct >= 0 else '') + format(total_pct, '.2f') + '%'))
+        table = '```' + chr(10) + chr(10).join(rows) + chr(10) + '```'
+        parts = [
+            '*MarketView End-of-Day P&L Report*',
+            date_str,
+            '',
+            table,
+            '',
+            'Login: https://stockmarketview.duckdns.org',
+        ]
+        await send_whatsapp(whatsapp, chr(10).join(parts))
+    except Exception as e:
+        log.error('[DailyPnL] user %s: %s', user_id, e)
+
+async def broadcast_summary(fn):
+    """Call fn(user_id, whatsapp, name) for every user with a WhatsApp number."""
+    users = await _get_all_whatsapp_users()
+    for u in users:
+        asyncio.create_task(fn(u["id"], u["whatsapp"], u["name"]))
+
+# ── ROUTE REGISTRATION ────────────────────────────────────────────────────────
+
+@require_auth
+async def get_watchlist(request: web.Request):
+    user = request["user"]
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT symbol FROM mv_watchlist WHERE user_id=%s ORDER BY added_at", (user["id"],))
+            symbols = [r[0] for r in cur.fetchall()]
+    return web.json_response(symbols)
+
+@require_auth
+async def add_watchlist(request: web.Request):
+    user = request["user"]
+    body = await request.json()
+    symbol = body.get("symbol", "").strip().upper()
+    if not symbol:
+        return web.json_response({"error": "symbol required"}, status=400)
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO mv_watchlist (user_id, symbol) VALUES (%s, %s) ON CONFLICT DO NOTHING", (user["id"], symbol))
+        conn.commit()
+    return web.json_response({"ok": True})
+
+@require_auth
+async def remove_watchlist(request: web.Request):
+    user = request["user"]
+    symbol = request.match_info["symbol"].upper()
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM mv_watchlist WHERE user_id=%s AND symbol=%s", (user["id"], symbol))
+        conn.commit()
+    return web.json_response({"ok": True})
+
+def attach_portfolio_routes(app: web.Application):
+    """Call from server.py to mount all portfolio/auth routes."""
+    try:
+        init_db()
+    except Exception as e:
+        log.error("[Portfolio] DB init failed: %s", e)
+
+    # Google OAuth
+    app.router.add_get("/auth/google/login",    google_login)
+    app.router.add_get("/auth/google/callback", google_callback)
+    app.router.add_get("/auth/google/logout",   google_logout)
+    app.router.add_get("/auth/google/me",       get_me)
+
+    # WhatsApp
+    app.router.add_post("/user/whatsapp",       update_whatsapp)
+
+    # Portfolio CRUD
+    app.router.add_get   ("/portfolio",           list_portfolio)
+    app.router.add_post  ("/portfolio",           add_portfolio)
+    app.router.add_put   ("/portfolio/{id}",      update_portfolio)
+    app.router.add_delete("/portfolio/{id}",      delete_portfolio)
+
+    # Alerts CRUD
+    app.router.add_get   ("/watchlist",            get_watchlist)
+    app.router.add_post  ("/watchlist",            add_watchlist)
+    app.router.add_delete("/watchlist/{symbol}",   remove_watchlist)
+    app.router.add_get   ("/alerts",              list_alerts)
+    app.router.add_post  ("/alerts",              create_alert)
+    app.router.add_delete("/alerts/{id}",         delete_alert)
+    app.router.add_put   ("/alerts/{id}/toggle",  toggle_alert)
+
+    # Serve portfolio page
+    app.router.add_get("/portfolio.html", lambda r: web.FileResponse("./portfolio.html"))
+
+    log.info("[Portfolio] Routes mounted.")
