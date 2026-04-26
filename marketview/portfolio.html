@@ -426,3 +426,60 @@
 </div>
 
 <script>
+const API = '';  // same origin
+let currentUser = null;
+let holdings    = [];
+let alerts      = [];
+let liveData    = {};  // symbol → {ltp, day_change, pct_change, high52, low52}
+
+// ── AUTH ──────────────────────────────────────────────────────────────────────
+async function init() {
+  const res  = await fetch(`${API}/auth/google/me`, { credentials: 'include' });
+  const data = await res.json();
+  if (!data.authenticated) {
+    document.getElementById('login-screen').style.display = 'flex';
+    return;
+  }
+  currentUser = data;
+  document.getElementById('login-screen').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+  document.getElementById('nav-user').style.display = 'flex';
+  document.getElementById('user-avatar').src = data.picture || '';
+  document.getElementById('user-name-nav').textContent = data.name;
+  if (data.whatsapp) {
+    document.getElementById('wa-input').value = data.whatsapp;
+    showWaNumber(data.whatsapp);
+    document.getElementById('whatsapp-banner').style.background = 'rgba(0,212,170,.05)';
+  }
+  await Promise.all([loadHoldings(), loadAlerts()]);
+  startLivePrices();
+}
+
+function logout() { window.location.href = '/auth/google/logout'; }
+
+// ── WHATSAPP ──────────────────────────────────────────────────────────────────
+async function saveWhatsapp() {
+  const num = document.getElementById('wa-input').value.trim();
+  if (!num) return;
+  await fetch(`${API}/user/whatsapp`, { method: 'POST', credentials: 'include', headers: {'Content-Type':'application/json'}, body: JSON.stringify({whatsapp: num}) });
+  showWaNumber(num);
+}
+function showWaNumber(num) {
+  document.getElementById('wa-banner-text').textContent = '✅ WhatsApp alerts active: ' + num;
+  document.getElementById('wa-input-row').style.display = 'none';
+  document.getElementById('wa-saved-row').style.display = 'block';
+}
+function editWhatsapp() {
+  document.getElementById('wa-input-row').style.display = 'flex';
+  document.getElementById('wa-saved-row').style.display = 'none';
+  document.getElementById('wa-input').focus();
+}
+
+// ── TABS ──────────────────────────────────────────────────────────────────────
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach((t,i) => t.classList.toggle('active', ['holdings','alerts'][i] === name));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+}
+
+// ── HOLDINGS ──────────────────────────────────────────────────────────────────
