@@ -455,3 +455,168 @@ def run_ta(symbol: str, candle: dict) -> dict | None:
         **patterns,
     }
 
+# ── LIVE BAR BROADCAST (250ms) ───────────────────────────────────────────────
+async def live_bar_loop():
+    """
+    Every 250 ms, peek at the current tick_buffer (without draining it) and
+    broadcast a lightweight 'live_bar' message to all watchers.
+    This lets the frontend show a real-time forming candle.
+    """
+    print("[LiveBar] Started — broadcasting every 250ms")
+    while True:
+        try:
+            await asyncio.sleep(0.25)
+            for symbol, ticks in list(tick_buffer.items()):
+                if not ticks or not watchers.get(symbol):
+                    continue
+                # Peek — do NOT pop; the 1s aggregator will drain these
+                prices = list(ticks)
+                vol    = vol_buffer.get(symbol, 0)
+                live_bar = {
+                    "live_bar": True,
+                    "symbol":   symbol,
+                    "time":     int(time.time() * 1000),
+                    "open":     prices[0],
+                    "high":     max(prices),
+                    "low":      min(prices),
+                    "close":    prices[-1],
+                    "volume":   vol,
+                    "ltp":      prices[-1],
+                }
+                msg  = json.dumps(live_bar)
+                dead = set()
+                for ws in list(watchers.get(symbol, [])):
+                    try:
+                        await ws.send(msg)
+                    except websockets.exceptions.ConnectionClosed:
+                        dead.add(ws)
+                watchers[symbol] -= dead
+        except Exception as e:
+            print(f"[LiveBar Error]: {e}")
+
+
+# ── DAILY WHATSAPP SCHEDULER ─────────────────────────────────────────────────
+async def scheduled_summaries():
+    """Fire WhatsApp summaries at IST market open (09:15) and close (15:30)."""
+    import zoneinfo
+    from datetime import datetime, time as dtime, timedelta
+    IST = zoneinfo.ZoneInfo("Asia/Kolkata")
+    EVENTS = [
+        (dtime(9, 15),  send_market_open_summary, "market-open"),
+        (dtime(15, 30), send_daily_pnl_summary,   "daily-pnl"),
+    ]
+    print("[Scheduler] Started — watching for 09:15 and 15:30 IST")
+    while True:
+        try:
+            now   = datetime.now(IST)
+            today = now.date()
+            next_fire = next_fn = next_label = None
+            for t, fn, label in EVENTS:
+                candidate = datetime.combine(today, t, tzinfo=IST)
+                if now < candidate:
+                    if next_fire is None or candidate < next_fire:
+                        next_fire, next_fn, next_label = candidate, fn, label
+            if next_fire is None:
+                tomorrow  = today + timedelta(days=1)
+                next_fire = datetime.combine(tomorrow, EVENTS[0][0], tzinfo=IST)
+                next_fn, next_label = EVENTS[0][1], EVENTS[0][2]
+            sleep_secs = (next_fire - now).total_seconds()
+            print(f"[Scheduler] Next: {next_label} at {next_fire.strftime('%Y-%m-%d %H:%M IST')} (in {sleep_secs/60:.1f} min)")
+            await asyncio.sleep(max(sleep_secs, 1))
+            print(f"[Scheduler] Firing {next_label}")
+            await broadcast_summary(next_fn)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            print(f"[Scheduler Error]: {e}")
+            await asyncio.sleep(60)
+
+# ── 1-SECOND AGGREGATOR LOOP ─────────────────────────────────────────────────
+async def aggregator_loop():
+    print(f"[Aggregator] Started — firing every {CANDLE_INTERVAL}s")
+    while True:
+        try:
+            await asyncio.sleep(CANDLE_INTERVAL)
+            now = time.time()
+
+            # ── Memory cleanup: evict symbols idle for CLEANUP_IDLE_SEC ──
+            for sym in list(hist_data.keys()):
+                if not watchers.get(sym):
+                    if now - last_watcher.get(sym, now) > CLEANUP_IDLE_SEC:
+                        print(f"[Aggregator] Evicting idle symbol: {sym}")
+                        hist_data.pop(sym, None)
+                        company_names.pop(sym, None)
+                        sym_key = sym_to_key.pop(sym, None)
+                        last_tick_time.pop(sym, None)
+                        last_watcher.pop(sym, None)
+                        # Restart stream without the evicted key
+                        if sym_key and sym_to_key:
+                            dp.start_stream(list(sym_to_key.values()), on_tick)
+
+            # ── Drain tick buffers and broadcast ──
+            for symbol, ticks in list(tick_buffer.items()):
+                if not ticks:
+                    continue
+
+                prices = tick_buffer.pop(symbol, [])
+                vol    = vol_buffer.pop(symbol, 0)
+                if not prices:
+                    continue
+
+                candle = {
+                    "time":   int(time.time() * 1000),
+                    "open":   prices[0],
+                    "high":   max(prices),
+                    "low":    min(prices),
+                    "close":  prices[-1],
+                    "volume": vol,
+                }
+
+                try:
+                    async with hist_data_lock:
+                        result = run_ta(symbol, candle)
+                except Exception as e:
+                    print(f"[TA ERROR] {symbol}: {e}")
+                    continue
+
+                if result is None:
+                    continue
+
+                msg  = json.dumps(result)
+                dead = set()
+                for ws in list(watchers.get(symbol, [])):
+                    try:
+                        await ws.send(msg)
+                    except websockets.exceptions.ConnectionClosed:
+                        dead.add(ws)
+                watchers[symbol] -= dead
+
+                # ── Fire alert checker on every aggregated candle ──────────
+                ltp        = candle["close"]
+                open_price = candle["open"]
+                pct_change = ((ltp - open_price) / open_price * 100) if open_price else 0.0
+                avg_vol    = rolling_avg_vol.get(symbol, float(vol) or 1.0)
+                rolling_avg_vol[symbol] = avg_vol * 0.9 + float(vol) * 0.1
+                asyncio.create_task(check_alerts(symbol, ltp, pct_change, vol, avg_vol))
+
+                if watchers.get(symbol):
+                    last_watcher[symbol] = now
+
+        except Exception as e:
+            print(f"[Aggregator Error]: {e}")
+
+
+async def handle_ltp(request):
+    """GET /api/ltp?symbols=RELIANCE,INFY — return last known close per symbol."""
+    syms = request.rel_url.query.get("symbols", "").split(",")
+    result = {}
+    async with hist_data_lock:
+        for sym in syms:
+            sym = sym.strip()
+            if not sym:
+                continue
+            df = hist_data.get(sym)
+            if df is not None and not df.empty:
+                result[sym] = float(df["close"].iloc[-1])
+    return web.json_response(result)
+
