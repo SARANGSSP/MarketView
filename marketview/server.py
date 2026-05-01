@@ -620,3 +620,296 @@ async def handle_ltp(request):
                 result[sym] = float(df["close"].iloc[-1])
     return web.json_response(result)
 
+# ── LOAD SYMBOL ───────────────────────────────────────────────────────────────
+async def ensure_symbol_loaded(symbol: str) -> bool:
+    if symbol in hist_data:
+        key, _ = dp.resolve(symbol)
+        if key not in sym_to_key.values():
+            sym_to_key[symbol] = key
+            dp.start_stream(list(sym_to_key.values()), on_tick)
+            print(f"[Server] Subscribed to stream (from cache): {list(sym_to_key.values())}")
+        return True
+    print(f"[Server] Loading baseline for {symbol}…")
+    try:
+        df, name = await fetch_with_retry(dp.get_baseline, symbol, BUFFER_MIN)
+        async with hist_data_lock:
+            hist_data[symbol]     = df
+            company_names[symbol] = name
+        key, _ = dp.resolve(symbol)
+        if key not in sym_to_key.values():
+            sym_to_key[symbol] = key
+            dp.start_stream(list(sym_to_key.values()), on_tick)
+            print(f"[Server] Subscribed to stream: {list(sym_to_key.values())}")
+        return True
+    except Exception as e:
+        print(f"[Server] Failed to load {symbol}: {e}")
+        return False
+
+# ── REST: HISTORY ─────────────────────────────────────────────────────────────
+async def handle_cache_invalidate(request):
+    """
+    POST /cache/invalidate?symbol=RELIANCE&range=1y
+    Manually evict a cached entry — useful after a bad data fetch or token refresh.
+    Omit range to evict all ranges for the symbol.
+    Omit both to flush the entire instruments cache.
+    """
+    if not _check_api_key_rest(request):
+        return web.json_response({"error": "Unauthorized"}, status=401)
+
+    symbol = request.query.get("symbol", "").upper()
+    range_ = request.query.get("range", "")
+    instr  = request.query.get("instruments", "")
+
+    if instr:
+        await asyncio.to_thread(cache.invalidate_instruments)
+        return web.json_response({"invalidated": "instruments"})
+    elif symbol:
+        await asyncio.to_thread(cache.invalidate, symbol, range_ or None)
+        return web.json_response({"invalidated": symbol, "range": range_ or "all"})
+    else:
+        return web.json_response({"error": "Provide symbol= or instruments=1"}, status=400)
+
+
+def _check_api_key_rest(request) -> bool:
+    """Validate API key from query param or Authorization header."""
+    if not API_KEY:
+        return True   # no key configured → open (dev mode)
+    # Accept from header: Authorization: Bearer <key>
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer ") and auth_header[7:] == API_KEY:
+        return True
+    # Accept from query param: ?api_key=<key>
+    if request.query.get("api_key") == API_KEY:
+        return True
+    return False
+
+
+async def get_history(request):
+    if not _check_api_key_rest(request):
+        return web.json_response({"error": "Unauthorized"}, status=401)
+
+    # ── Rate limit by IP ──
+    ip = request.remote or "unknown"
+    if not _check_rate_limit(ip):
+        return web.json_response({"error": "Rate limit exceeded"}, status=429)
+
+    symbol = request.query.get("symbol", "").upper()
+    range_ = request.query.get("range", "1y")
+    if not symbol:
+        return web.json_response({"error": "Symbol required"}, status=400)
+    try:
+        if range_ == "1d":
+            df, name = await asyncio.to_thread(dp.get_intraday, symbol)
+            candle_type = "intraday"
+        else:
+            df, name = await asyncio.to_thread(dp.get_history, symbol, range_)
+            candle_type = "daily"
+
+        if df.empty:
+            return web.json_response({
+                "candles": [], "candle_type": candle_type, "patterns": {},
+                "rsi_arr": [], "macd_arr": [], "signal_arr": [], "hist_arr": [],
+                "bb_upper_arr": [], "bb_lower_arr": [], "bb_mid_arr": [],
+                "rsi": 50.0, "rsi_signal": "Neutral", "macd": 0.0,
+                "macd_signal": "Neutral", "macd_histogram": 0.0,
+                "volume_signal": "Normal", "support": None, "resistance": None,
+            })
+
+        ta = compute_ta_for_df(df)
+
+        candles_out = [
+            {"t": int(idx.timestamp() * 1000),
+             "o": float(r["open"]),  "h": float(r["high"]),
+             "l": float(r["low"]),   "c": float(r["close"]),
+             "v": int(r["volume"])}
+            for idx, r in df.iterrows()
+        ]
+
+        # session_open = first candle's open (used for day-change % calc in frontend)
+        session_open = float(df["open"].iloc[0]) if candle_type == "intraday" else None
+
+        return web.json_response({
+            "candles":      candles_out,
+            "candle_type":  candle_type,
+            "session_open": session_open,
+            "patterns":     {k: ta[k] for k in ("bull_count","bear_count","neut_count",
+                                                  "latest_pattern","latest_signal")
+                             if k in ta},
+            "rsi_arr":      ta.get("rsi_arr", []),
+            "macd_arr":     ta.get("macd_arr", []),
+            "signal_arr":   ta.get("signal_arr", []),
+            "hist_arr":     ta.get("hist_arr", []),
+            "bb_upper_arr": ta.get("bb_upper_arr", []),
+            "bb_lower_arr": ta.get("bb_lower_arr", []),
+            "bb_mid_arr":   ta.get("bb_mid_arr", []),
+            "rsi":            ta.get("rsi", 50.0),
+            "rsi_signal":     ta.get("rsi_signal", "Neutral"),
+            "macd":           ta.get("macd", 0.0),
+            "macd_signal":    ta.get("macd_signal", "Neutral"),
+            "macd_histogram": ta.get("macd_histogram", 0.0),
+            "volume_signal":  ta.get("volume_signal", "Normal"),
+            "support":        ta.get("support"),
+            "resistance":     ta.get("resistance"),
+        })
+    except Exception as e:
+        print(f"[REST /history error] {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+# ── REST: FUNDAMENTALS ───────────────────────────────────────────────────────
+
+async def handle_fundamentals(request):
+    """
+    GET /fundamentals?symbol=RELIANCE
+    Returns key ratios: P/E, P/B, ROE, ROCE, debt-to-equity, EPS, market cap, etc.
+    Data is fetched from yfinance and cached in PostgreSQL for 24 hours.
+    """
+    if not _check_api_key_rest(request):
+        return web.json_response({"error": "Unauthorized"}, status=401)
+
+    ip = request.remote or "unknown"
+    if not _check_rate_limit(ip):
+        return web.json_response({"error": "Rate limit exceeded"}, status=429)
+
+    symbol = request.query.get("symbol", "").upper()
+    if not symbol:
+        return web.json_response({"error": "symbol parameter required"}, status=400)
+
+    try:
+        data = await fp.get_fundamentals(symbol)
+        if not data:
+            return web.json_response(
+                {"error": f"No fundamental data found for {symbol}. "
+                          "Check the symbol is a valid NSE equity."},
+                status=404
+            )
+        return _json_response(data)
+    except Exception as e:
+        log.error("[REST /fundamentals] %s", e)
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def handle_financials_quarterly(request):
+    """
+    GET /financials/quarterly?symbol=RELIANCE
+    Returns the last 8 quarters of P&L:
+      period, sales, expenses, operating_profit, net_profit, eps
+    """
+    if not _check_api_key_rest(request):
+        return web.json_response({"error": "Unauthorized"}, status=401)
+
+    ip = request.remote or "unknown"
+    if not _check_rate_limit(ip):
+        return web.json_response({"error": "Rate limit exceeded"}, status=429)
+
+    symbol = request.query.get("symbol", "").upper()
+    if not symbol:
+        return web.json_response({"error": "symbol parameter required"}, status=400)
+
+    try:
+        rows = await fp.get_quarterly(symbol)
+        return _json_response({"symbol": symbol, "quarters": rows})
+    except Exception as e:
+        log.error("[REST /financials/quarterly] %s", e)
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def handle_financials_annual(request):
+    """
+    GET /financials/annual?symbol=RELIANCE
+    Returns up to 10 years of annual P&L.
+    """
+    if not _check_api_key_rest(request):
+        return web.json_response({"error": "Unauthorized"}, status=401)
+
+    ip = request.remote or "unknown"
+    if not _check_rate_limit(ip):
+        return web.json_response({"error": "Rate limit exceeded"}, status=429)
+
+    symbol = request.query.get("symbol", "").upper()
+    if not symbol:
+        return web.json_response({"error": "symbol parameter required"}, status=400)
+
+    try:
+        rows = await fp.get_annual(symbol)
+        return _json_response({"symbol": symbol, "annual": rows})
+    except Exception as e:
+        log.error("[REST /financials/annual] %s", e)
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def handle_balance_sheet(request):
+    """
+    GET /financials/balance-sheet?symbol=RELIANCE
+    Returns up to 10 years of annual balance sheet:
+      year, total_assets, total_liabilities, total_equity, borrowings, reserves
+    """
+    if not _check_api_key_rest(request):
+        return web.json_response({"error": "Unauthorized"}, status=401)
+
+    ip = request.remote or "unknown"
+    if not _check_rate_limit(ip):
+        return web.json_response({"error": "Rate limit exceeded"}, status=429)
+
+    symbol = request.query.get("symbol", "").upper()
+    if not symbol:
+        return web.json_response({"error": "symbol parameter required"}, status=400)
+
+    try:
+        rows = await fp.get_balance_sheet(symbol)
+        return _json_response({"symbol": symbol, "balance_sheet": rows})
+    except Exception as e:
+        log.error("[REST /financials/balance-sheet] %s", e)
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def handle_cashflow(request):
+    """
+    GET /financials/cashflow?symbol=RELIANCE
+    Returns up to 10 years of annual cash flow:
+      year, operating_cashflow, investing_cashflow, financing_cashflow, free_cashflow
+    """
+    if not _check_api_key_rest(request):
+        return web.json_response({"error": "Unauthorized"}, status=401)
+
+    ip = request.remote or "unknown"
+    if not _check_rate_limit(ip):
+        return web.json_response({"error": "Rate limit exceeded"}, status=429)
+
+    symbol = request.query.get("symbol", "").upper()
+    if not symbol:
+        return web.json_response({"error": "symbol parameter required"}, status=400)
+
+    try:
+        rows = await fp.get_cashflow(symbol)
+        return _json_response({"symbol": symbol, "cashflow": rows})
+    except Exception as e:
+        log.error("[REST /financials/cashflow] %s", e)
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def handle_financials_all(request):
+    """
+    GET /financials/all?symbol=RELIANCE
+    Returns everything in a single call:
+      fundamentals, quarterly, annual, balance_sheet, cashflow
+    Useful for populating a full company page in one network request.
+    """
+    if not _check_api_key_rest(request):
+        return web.json_response({"error": "Unauthorized"}, status=401)
+
+    ip = request.remote or "unknown"
+    if not _check_rate_limit(ip):
+        return web.json_response({"error": "Rate limit exceeded"}, status=429)
+
+    symbol = request.query.get("symbol", "").upper()
+    if not symbol:
+        return web.json_response({"error": "symbol parameter required"}, status=400)
+
+    try:
+        data = await fp.get_all(symbol)
+        return _json_response(data)
+    except Exception as e:
+        log.error("[REST /financials/all] %s", e)
+        return web.json_response({"error": str(e)}, status=500)
+
+
