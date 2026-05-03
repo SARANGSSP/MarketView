@@ -483,3 +483,110 @@ function switchTab(name) {
 }
 
 // ── HOLDINGS ──────────────────────────────────────────────────────────────────
+async function loadHoldings() {
+  const res = await fetch(`${API}/portfolio`, { credentials: 'include' });
+  holdings  = await res.json();
+  renderHoldings();
+}
+
+function renderHoldings() {
+  const tbody = document.getElementById('holdings-body');
+  if (!holdings.length) {
+    tbody.innerHTML = '<tr><td colspan="10" class="empty"><div class="empty-icon">📂</div><div>No holdings yet. Add your first stock!</div></td></tr>';
+    updateSummary();
+    return;
+  }
+  tbody.innerHTML = holdings.map(h => {
+    const live      = liveData[h.symbol] || {};
+    const ltp       = live.ltp   || 0;
+    const invested  = h.quantity * h.buy_price;
+    const value     = ltp ? h.quantity * ltp : 0;
+    const pnl       = ltp ? value - invested : 0;
+    const pnlPct    = invested ? (pnl / invested) * 100 : 0;
+    const dayChg    = live.day_change || 0;
+    const dayChgPct = live.pct_change || 0;
+    const h52       = live.high52 ? `₹${fmt(live.high52)} / ₹${fmt(live.low52)}` : '—';
+    const ltpStr    = ltp ? `₹${fmt(ltp)}` : '<span class="spinner"></span>';
+    const pnlClass  = pnl >= 0 ? 'pos' : 'neg';
+    const pnlSign   = pnl >= 0 ? '+' : '';
+    const daySign   = dayChg >= 0 ? '+' : '';
+    const dayClass  = dayChg >= 0 ? 'pos' : 'neg';
+    return `<tr>
+      <td class="sym-cell">${h.symbol}</td>
+      <td class="mono">${h.quantity}</td>
+      <td class="mono">₹${fmt(h.buy_price)}</td>
+      <td class="mono">${ltpStr}</td>
+      <td class="mono">₹${fmt(invested)}</td>
+      <td class="mono">${ltp ? '₹'+fmt(value) : '—'}</td>
+      <td class="mono ${pnlClass}">${ltp ? pnlSign+'₹'+fmt(Math.abs(pnl))+' ('+pnlSign+pnlPct.toFixed(2)+'%)' : '—'}</td>
+      <td class="mono ${dayClass}">${ltp ? daySign+fmt(dayChg)+' ('+daySign+dayChgPct.toFixed(2)+'%)' : '—'}</td>
+      <td class="mono" style="font-size:11px">${h52}</td>
+      <td><div class="action-btns">
+        <button class="btn btn-sm btn-ghost" onclick="openAddAlert('${h.symbol}')">🔔</button>
+        <button class="btn btn-sm btn-danger" onclick="deleteHolding(${h.id})">✕</button>
+      </div></td>
+    </tr>`;
+  }).join('');
+  updateSummary();
+}
+
+function updateSummary() {
+  let invested = 0, value = 0, dayChg = 0;
+  for (const h of holdings) {
+    const live  = liveData[h.symbol] || {};
+    const ltp   = live.ltp || 0;
+    invested += h.quantity * h.buy_price;
+    if (ltp) {
+      value  += h.quantity * ltp;
+      dayChg += h.quantity * (live.day_change || 0);
+    }
+  }
+  const pnl    = value - invested;
+  const pnlPct = invested ? (pnl / invested) * 100 : 0;
+  const pnlSign = pnl >= 0 ? '+' : '';
+  const daySign = dayChg >= 0 ? '+' : '';
+
+  document.getElementById('s-invested').textContent = '₹' + fmtLarge(invested);
+  document.getElementById('s-value').textContent    = value ? '₹' + fmtLarge(value) : '—';
+  const pnlEl = document.getElementById('s-pnl');
+  pnlEl.textContent  = value ? pnlSign + '₹' + fmtLarge(Math.abs(pnl)) : '—';
+  pnlEl.className    = 'summary-value mono ' + (pnl >= 0 ? 'pos' : 'neg');
+  document.getElementById('s-pnl-pct').textContent = value ? pnlSign + pnlPct.toFixed(2) + '%' : '';
+  const dayEl = document.getElementById('s-day');
+  dayEl.textContent = value ? daySign + '₹' + fmtLarge(Math.abs(dayChg)) : '—';
+  dayEl.className   = 'summary-value mono ' + (dayChg >= 0 ? 'pos' : 'neg');
+  document.getElementById('s-alerts').textContent = alerts.filter(a => a.active).length;
+}
+
+async function deleteHolding(id) {
+  if (!confirm('Remove this holding?')) return;
+  await fetch(`${API}/portfolio/${id}`, { method: 'DELETE', credentials: 'include' });
+  holdings = holdings.filter(h => h.id !== id);
+  renderHoldings();
+}
+
+// ── ADD HOLDING MODAL ─────────────────────────────────────────────────────────
+function openAddHolding() {
+  document.getElementById('h-symbol').value = '';
+  document.getElementById('h-qty').value    = '';
+  document.getElementById('h-price').value  = '';
+  document.getElementById('h-notes').value  = '';
+  document.getElementById('modal-holding').classList.add('open');
+}
+
+async function submitHolding() {
+  const symbol    = document.getElementById('h-symbol').value.trim().toUpperCase();
+  const quantity  = parseFloat(document.getElementById('h-qty').value);
+  const buy_price = parseFloat(document.getElementById('h-price').value);
+  const notes     = document.getElementById('h-notes').value;
+  if (!symbol || !quantity || !buy_price) return alert('Fill all required fields');
+  const res = await fetch(`${API}/portfolio`, { method: 'POST', credentials: 'include',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ symbol, quantity, buy_price, notes }) });
+  if (!res.ok) return alert('Error adding holding');
+  closeModal('modal-holding');
+  await loadHoldings();
+  fetchLivePrice(symbol);
+}
+
+// ── ALERTS ────────────────────────────────────────────────────────────────────
