@@ -590,3 +590,195 @@ async function submitHolding() {
 }
 
 // ── ALERTS ────────────────────────────────────────────────────────────────────
+async function loadAlerts() {
+  const res = await fetch(`${API}/alerts`, { credentials: 'include' });
+  alerts    = await res.json();
+  renderAlerts();
+}
+
+function renderAlerts() {
+  const tbody = document.getElementById('alerts-body');
+  document.getElementById('s-alerts').textContent = alerts.filter(a => a.active).length;
+  if (!alerts.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty"><div class="empty-icon">🔔</div><div>No alerts. Create one to get WhatsApp notifications!</div></td></tr>';
+    return;
+  }
+  const condLabel = { above: 'ABOVE ▲', below: 'BELOW ▼', pct_change: '% MOVE', volume_spike: 'VOL SPIKE' };
+  const condClass = { above: 'cond-above', below: 'cond-below', pct_change: 'cond-pct', volume_spike: 'cond-vol' };
+  tbody.innerHTML = alerts.map(a => {
+    const dotClass = a.active ? 'dot-active' : 'dot-inactive';
+    const statusText = a.triggered_at ? 'Triggered' : (a.active ? 'Active' : 'Paused');
+    const targetDisplay = a.condition === 'pct_change' ? `±${a.target}%`
+                        : a.condition === 'volume_spike' ? `${a.target}× avg`
+                        : `₹${fmt(a.target)}`;
+    const created = new Date(a.created_at).toLocaleDateString('en-IN', {day:'numeric',month:'short'});
+    return `<tr>
+      <td class="sym-cell">${a.symbol}</td>
+      <td><span class="cond-label ${condClass[a.condition]}">${condLabel[a.condition]}</span></td>
+      <td class="mono">${targetDisplay}</td>
+      <td><span class="status-dot ${dotClass}"></span>${statusText}</td>
+      <td style="color:var(--muted);font-size:12px">${created}</td>
+      <td><div class="action-btns">
+        <button class="btn btn-sm btn-ghost" onclick="toggleAlert(${a.id})">${a.active ? 'Pause' : 'Resume'}</button>
+        <button class="btn btn-sm btn-danger" onclick="deleteAlert(${a.id})">✕</button>
+      </div></td>
+    </tr>`;
+  }).join('');
+}
+
+function openAddAlert(symbol = '') {
+  document.getElementById('a-symbol').value = symbol;
+  document.getElementById('a-cond').value   = 'above';
+  document.getElementById('a-target').value = '';
+  updateAlertTargetLabel();
+  document.getElementById('modal-alert').classList.add('open');
+}
+
+function updateAlertTargetLabel() {
+  const cond = document.getElementById('a-cond').value;
+  const labels = { above: 'Target Price (₹)', below: 'Target Price (₹)', pct_change: '% Move Target (e.g. 2 for ±2%)', volume_spike: 'Volume Multiplier (e.g. 2 for 2× avg)' };
+  document.getElementById('a-target-label').textContent = labels[cond];
+}
+
+async function submitAlert() {
+  const symbol    = document.getElementById('a-symbol').value.trim().toUpperCase();
+  const condition = document.getElementById('a-cond').value;
+  const target    = parseFloat(document.getElementById('a-target').value);
+  if (!symbol || !condition || isNaN(target)) return alert('Fill all fields');
+  const res = await fetch(`${API}/alerts`, { method: 'POST', credentials: 'include',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ symbol, condition, target }) });
+  if (!res.ok) return alert('Error creating alert');
+  closeModal('modal-alert');
+  await loadAlerts();
+}
+
+async function deleteAlert(id) {
+  if (!confirm('Delete this alert?')) return;
+  await fetch(`${API}/alerts/${id}`, { method: 'DELETE', credentials: 'include' });
+  alerts = alerts.filter(a => a.id !== id);
+  renderAlerts();
+}
+
+async function toggleAlert(id) {
+  await fetch(`${API}/alerts/${id}/toggle`, { method: 'PUT', credentials: 'include' });
+  await loadAlerts();
+}
+
+// ── LIVE PRICES ───────────────────────────────────────────────────────────────
+async function fetchLivePrice(symbol) {
+  try {
+    const apiKey = window.MV_API_KEY || '';
+    const ltpRes = await fetch(`/api/ltp?symbols=${symbol}&api_key=${apiKey}`);
+    const ltpData = await ltpRes.json();
+    const res = await fetch(`/history?symbol=${symbol}&range=1d&api_key=${apiKey}`);
+    const data = await res.json();
+    if (!data.candles || !data.candles.length) return;
+    const last    = data.candles[data.candles.length - 1];
+    const first   = data.candles[0];
+    const ltp     = (ltpData && ltpData[symbol]) ? ltpData[symbol] : last.c;
+    const dayOpen = first.o;
+    const dayChg  = ltp - dayOpen;
+    const pctChg  = (dayChg / dayOpen) * 100;
+
+    // 52 week from 1y history
+    const y = await fetch(`/history?symbol=${symbol}&range=1y&api_key=${apiKey}`);
+    const yd = await y.json();
+    let h52 = 0, l52 = Infinity;
+    if (yd.candles) { for (const c of yd.candles) { h52 = Math.max(h52, c.h); l52 = Math.min(l52, c.l); } }
+
+    liveData[symbol] = { ltp, day_change: dayChg, pct_change: pctChg, high52: h52 || 0, low52: l52 === Infinity ? 0 : l52 };
+    renderHoldings();
+  } catch(e) {}
+}
+
+function startLivePrices() {
+  const symbols = [...new Set(holdings.map(h => h.symbol))];
+  symbols.forEach(fetchLivePrice);
+  setInterval(() => { const syms = [...new Set(holdings.map(h => h.symbol))]; syms.forEach(fetchLivePrice); }, 60000);
+}
+
+// ── UTILS ─────────────────────────────────────────────────────────────────────
+function fmt(n) {
+  if (!n && n !== 0) return '—';
+  return Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function fmtLarge(n) {
+  if (n >= 1e7) return (n/1e7).toFixed(2) + 'Cr';
+  if (n >= 1e5) return (n/1e5).toFixed(2) + 'L';
+  return fmt(n);
+}
+function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+
+// Close modal on backdrop click
+document.querySelectorAll('.modal-backdrop').forEach(el => {
+  el.addEventListener('click', e => { if (e.target === el) el.classList.remove('open'); });
+});
+
+// MV_API_KEY from server config
+const hostname = location.hostname;
+const PORT_WS   = 8765;
+const PORT_REST  = 8000;
+window.MV_WS_URL   = (location.protocol === "https:" ? "wss://" : "ws://") + hostname + (location.protocol === "https:" ? "/ws" : ":" + PORT_WS);
+window.MV_REST_URL = (location.protocol === "https:" ? "https://" : "http://") + hostname + (location.protocol === "https:" ? "" : ":" + PORT_REST);
+window.MV_API_KEY  = "018252a4bd0fa6c9370630e02f5b89a8844ec3b678c71cb49efeb12827dd7699";
+
+init();
+
+// ── Symbol Search Dropdown ──
+let _dd = null, _ddDebounce = null, _ddResults = [];
+function _getDD() {
+  if (!_dd) {
+    _dd = document.createElement('div');
+    _dd.id = 'symDropdown';
+    _dd.className = 'search-dropdown';
+    _dd.style.display = 'none';
+    document.body.appendChild(_dd);
+  }
+  return _dd;
+}
+function _closeDD() { const d = _getDD(); d.style.display = 'none'; _ddResults = []; }
+async function _fetchDD(q, inputEl, onPick) {
+  if (q.length < 1) { _closeDD(); return; }
+  try {
+    const res = await fetch(`${API}/search?q=${encodeURIComponent(q)}&limit=10`);
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data.length) { _closeDD(); return; }
+    _ddResults = data;
+    const dd = _getDD();
+    dd.innerHTML = data.map((r,i) => `<div class="sd-item" data-idx="${i}"><span class="sd-sym">${r.symbol}</span><span class="sd-name">${r.name}</span></div>`).join('');
+    dd.querySelectorAll('.sd-item').forEach(item => {
+      item.addEventListener('mousedown', e => {
+        e.preventDefault();
+        onPick(_ddResults[parseInt(item.dataset.idx)].symbol);
+        _closeDD();
+      });
+    });
+    const rect = inputEl.getBoundingClientRect();
+    dd.style.left = rect.left + 'px';
+    dd.style.top = (rect.bottom + 4) + 'px';
+    dd.style.width = rect.width + 'px';
+    dd.style.display = 'block';
+  } catch(e) {}
+}
+function _wireSearch(inputId) {
+  const inp = document.getElementById(inputId);
+  if (!inp) return;
+  inp.setAttribute('autocomplete', 'off');
+  inp.addEventListener('input', function() {
+    clearTimeout(_ddDebounce);
+    const q = this.value.trim();
+    if (!q) { _closeDD(); return; }
+    _ddDebounce = setTimeout(() => _fetchDD(q, inp, sym => { inp.value = sym; }), 150);
+  });
+  inp.addEventListener('blur', () => setTimeout(_closeDD, 150));
+}
+window.addEventListener('load', () => {
+  _wireSearch('h-symbol');
+  _wireSearch('a-symbol');
+});
+
+</script>
+</body>
+</html>
