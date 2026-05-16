@@ -1,0 +1,310 @@
+
+/* ═══════════════════════════════════════════════════════════════
+   MARKETVIEW — MOBILE RESPONSIVE CSS
+   Append to bottom of /opt/marketview/static/style.css
+   Breakpoints: 768px (mobile), 480px (small phone)
+═══════════════════════════════════════════════════════════════ */
+
+/* ─── 768px — MOBILE ──────────────────────────────────────── */
+@media (max-width: 768px) {
+
+  body { font-size: 13px; }
+
+  .page { padding: 10px 10px 32px; gap: 10px; }
+
+  /* ── NAVBAR ── */
+  .navbar {
+    height: auto;
+    min-height: 48px;
+    padding: 8px 14px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .nav-right { gap: 6px; flex-wrap: wrap; }
+
+  /* Hide decorative items only — keep buttons */
+  .nav-live, .nav-badge { display: none; }
+
+  .nav-alert-btn   { padding: 5px 8px; font-size: 11px; }
+  .nav-compare-btn { padding: 5px 8px; font-size: 11px; }
+  .nav-signin-btn  { padding: 5px 8px; font-size: 11px; }
+
+  /* ── TOP ROW → stacked ── */
+  .top-row { grid-template-columns: 1fr; gap: 10px; }
+
+  /* ── STOCK HEADER ── */
+  .stock-header { padding: 14px 14px 12px; }
+  .stock-symbol { font-size: 18px; }
+  .stock-price  { font-size: 26px; }
+  .stock-change { font-size: 11px; }
+  .bid-ask-row  { gap: 8px; padding: 7px 10px; font-size: 10px; }
+
+  /* ── MARKET STATS ── */
+  .market-stats { padding: 12px; }
+  .ms-grid      { grid-template-columns: 1fr 1fr; gap: 6px; }
+  .ms-cell      { padding: 8px 10px; }
+  .ms-cell-val  { font-size: 13px; }
+
+  /* ── WATCHLIST ── */
+  .watchlist-wrap { padding: 12px; }
+  .wl-header { flex-direction: column; align-items: flex-start; gap: 8px; }
+  .wl-add { width: 100%; }
+  .wl-add input { width: 100%; flex: 1; font-size: 16px; padding: 7px 10px; }
+  .wl-add-btn   { padding: 7px 14px; font-size: 12px; flex-shrink: 0; }
+  .wl-items     { gap: 5px; }
+  .wl-item      { padding: 6px 9px; }
+
+  /* ── ALERTS PANEL → bottom sheet ── */
+  .alerts-panel {
+    position: fixed;
+    top: auto; bottom: 0; right: 0; left: 0;
+    width: 100%; max-height: 70vh;
+    border-radius: 14px 14px 0 0;
+    box-shadow: 0 -8px 40px rgba(0,0,0,0.6);
+  }
+
+  .alert-form {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    padding: 10px 14px;
+  }
+  .alert-form input, .alert-form select { font-size: 16px; padding: 7px 8px; }
+  .alert-form #alertSym   { grid-column: 1; width: auto; }
+  .alert-form #alertDir   { grid-column: 2; width: auto; }
+  .alert-form #alertPrice { grid-column: 1; width: auto; }
+  .alert-add-btn          { grid-column: 2; }
+  .alert-list { max-height: 200px; }
+  .alert-item { font-size: 11px; gap: 6px; }
+  .alert-sym  { width: 50px; }
+
+  /* ── SEARCH ── */
+  .search-section   { padding: 10px 14px 12px; }
+  .search-box input { font-size: 16px; }
+  .search-dropdown  { max-height: 240px; font-size: 12px; }
+  .sd-item { padding: 9px 12px; gap: 8px; }
+  .sd-sym  { min-width: 80px; font-size: 12px; }
+  .sd-name { font-size: 11px; }
+
+  /* ── CHARTS ── */
+  .price-chart-card  { padding: 12px 12px 10px; }
+  .chart-wrap        { height: 110px; }
+  .pattern-card      { padding: 12px 12px 10px; }
+  .pstat-num         { font-size: 20px; }
+  .candle-chart-wrap { height: 110px; }
+  .time-btns { gap: 2px; flex-wrap: wrap; }
+  .time-btn  { padding: 3px 8px; font-size: 10px; }
+
+  .pattern-scale { grid-template-columns: 1fr 1fr; }
+  .pscale-item + .pscale-item { border-left: none; }
+  .pscale-item:nth-child(odd) + .pscale-item { border-left: 1px solid var(--border); }
+  .pscale-item:nth-child(3), .pscale-item:nth-child(4) { border-top: 1px solid var(--border); }
+
+  /* ── INDICATORS → stacked ── */
+  .indicator-row  { grid-template-columns: 1fr; gap: 10px; }
+  .ind-card       { padding: 12px 14px; }
+  .ind-val        { font-size: 20px; }
+  .ind-chart-wrap { height: 70px; }
+
+  /* ── VOLUME ── */
+  .vol-card       { padding: 12px 14px; }
+  .vol-chart-wrap { height: 80px; }
+
+  /* ── LIVE TICK ── */
+  .live-tick-card  { padding: 12px 12px 10px; }
+  .live-tick-wrap  { height: 120px; }
+  .live-tick-stats { flex-wrap: wrap; gap: 6px; padding: 6px 10px; font-size: 10px; }
+  .lts-sep         { display: none; }
+
+  /* ── FUNDAMENTALS ── */
+  .fund-card        { padding: 12px 14px 14px; }
+  .fund-ratios-grid { grid-template-columns: 1fr 1fr; }
+  .fund-ratio-val   { font-size: 14px; }
+
+  /* ── FINANCIALS ── */
+  .fin-card { padding: 12px 14px 14px; }
+  .fin-tabs { flex-wrap: wrap; gap: 4px; }
+  .fin-tab  { font-size: 10px; padding: 4px 10px; }
+  .fin-table { font-size: 10px; min-width: 420px; }
+  .fin-table th, .fin-table td { padding: 7px 10px; }
+
+  /* ── ABOUT ── */
+  .about-card { padding: 12px 14px; }
+  .about-grid { grid-template-columns: 1fr; gap: 10px; }
+  .about-right { text-align: left; }
+  .about-links { justify-content: flex-start; }
+  .about-bottom { grid-template-columns: 1fr; gap: 10px; }
+  .ab-col { padding: 0 !important; }
+  .ab-col + .ab-col { border-left: none; border-top: 1px solid var(--border); padding-top: 10px !important; }
+
+  /* ── COMPARISON → bottom sheet ── */
+  .compare-overlay { padding: 0; align-items: flex-end; }
+  .compare-panel   { max-width: 100%; max-height: 92vh; border-radius: 14px 14px 0 0; border-bottom: none; }
+  .compare-header  { padding: 14px 16px 12px; }
+  .compare-title   { font-size: 14px; }
+  .compare-input-row { padding: 10px 14px; gap: 8px; flex-direction: column; }
+  .compare-chips   { width: 100%; }
+  .compare-add-wrap { width: 100%; }
+  .compare-add-wrap input { width: 100%; flex: 1; font-size: 16px; }
+  .compare-tabs    { padding: 10px 14px 0; gap: 4px; flex-wrap: wrap; }
+  .compare-tab     { font-size: 10px; padding: 4px 10px; }
+  .compare-pane    { padding: 12px 14px 16px; }
+  .compare-chart-wrap { height: 200px; }
+  .compare-table   { min-width: 360px; font-size: 10px; }
+  .compare-table th, .compare-table td { padding: 7px 10px; }
+
+  /* ── TOAST ── */
+  .toast-container { bottom: 12px; right: 10px; left: 10px; }
+  .toast           { max-width: 100%; font-size: 12px; }
+
+  .sec-title { font-size: 12px; }
+  .sec-sub   { font-size: 10px; }
+}
+
+/* ─── 480px — SMALL PHONE ─────────────────────────────────── */
+@media (max-width: 480px) {
+
+  .page { padding: 8px 8px 28px; }
+
+  /* !! DO NOT hide nav-compare-btn here — Portfolio link uses that class !! */
+  .nav-brand-sub { display: none; }
+
+  .stock-symbol { font-size: 16px; }
+  .stock-price  { font-size: 22px; }
+  .bid-ask-row  { gap: 6px; font-size: 9px; }
+  .ba-sep       { display: none; }
+
+  .ms-cell-val  { font-size: 12px; }
+
+  /* Pattern scale → single column */
+  .pattern-scale { grid-template-columns: 1fr; }
+  .pscale-item + .pscale-item { border-left: none; border-top: 1px solid var(--border); }
+  .pscale-item:nth-child(odd) + .pscale-item { border-left: none; }
+
+  /* Fund grid → single column */
+  .fund-ratios-grid { grid-template-columns: 1fr; }
+
+  .live-tick-stats { font-size: 9px; }
+
+  /* Alert form → single column */
+  .alert-form { grid-template-columns: 1fr; }
+  .alert-form #alertSym, .alert-form #alertDir,
+  .alert-form #alertPrice { grid-column: 1; }
+  .alert-add-btn { grid-column: 1; width: 100%; }
+
+  .cmp-chip  { font-size: 10px; padding: 2px 8px 2px 6px; }
+  .fin-table { font-size: 9px; min-width: 340px; }
+}
+
+/* ─── TOUCH IMPROVEMENTS ──────────────────────────────────── */
+@media (hover: none) and (pointer: coarse) {
+  .wl-del, .alert-del, .alerts-close, .compare-close {
+    min-width: 32px; min-height: 32px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .wl-add-btn, .alert-add-btn, .compare-add-btn,
+  .time-btn, .fin-tab, .compare-tab { min-height: 36px; }
+
+  .card:hover         { border-color: var(--border); }
+  .ms-cell:hover      { border-color: var(--border); }
+  .wl-item:hover      { border-color: var(--border); background: var(--bg3); }
+  .fund-ratio-cell:hover { background: var(--bg3); }
+}
+
+/* ─── iOS SAFE AREA ───────────────────────────────────────── */
+@supports (padding: env(safe-area-inset-bottom)) {
+  .alerts-panel    { padding-bottom: env(safe-area-inset-bottom); }
+  .compare-panel   { padding-bottom: env(safe-area-inset-bottom); }
+  .toast-container { bottom: max(12px, env(safe-area-inset-bottom)); }
+  .navbar {
+    padding-left:  max(14px, env(safe-area-inset-left));
+    padding-right: max(14px, env(safe-area-inset-right));
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   PORTFOLIO PAGE — MOBILE RESPONSIVE
+   (portfolio.html has inline styles, so these target its classes)
+═══════════════════════════════════════════════════════════════ */
+
+/* ─── 768px ── */
+@media (max-width: 768px) {
+
+  /* Portfolio nav */
+  nav {
+    padding: 0 14px;
+    height: auto;
+    min-height: 56px;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+
+  .nav-links { gap: 4px; }
+  .nav-link  { padding: 5px 10px; font-size: 12px; }
+
+  .nav-user  { gap: 6px; }
+  .user-name { display: none; }
+  .btn-logout { padding: 5px 10px; font-size: 11px; }
+
+  /* Login card */
+  .login-card { padding: 32px 24px; }
+
+  /* Container */
+  .container { padding: 16px 12px; }
+
+  /* Summary cards → 2-col */
+  .summary-grid { grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 20px; }
+  .summary-card { padding: 14px 16px; }
+  .summary-value { font-size: 17px; }
+
+  /* Tabs */
+  .tabs { overflow-x: auto; -webkit-overflow-scrolling: touch; white-space: nowrap; }
+  .tab  { display: inline-block; padding: 8px 16px; font-size: 12px; }
+
+  /* WhatsApp banner */
+  .whatsapp-banner { flex-direction: column; align-items: flex-start; gap: 10px; padding: 12px 14px; }
+  .whatsapp-input  { width: 100%; font-size: 16px; }
+  .whatsapp-input-row { width: 100%; }
+
+  /* Section header */
+  .section-header { flex-wrap: wrap; gap: 8px; }
+  .section-title  { font-size: 12px; }
+
+  /* Holdings table → horizontally scrollable */
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; border-radius: 10px; }
+  table { min-width: 700px; }
+  th, td { padding: 10px 12px; font-size: 12px; }
+
+  /* Modal */
+  .modal { padding: 24px 20px; width: 95vw; }
+  .form-input { font-size: 16px; padding: 10px 12px; } /* prevent iOS zoom */
+
+  /* Buttons */
+  .btn { padding: 8px 14px; font-size: 12px; }
+  .btn-sm { padding: 5px 10px; font-size: 11px; }
+
+  /* Action buttons in table */
+  .action-btns { flex-direction: column; gap: 4px; }
+}
+
+/* ─── 480px ── */
+@media (max-width: 480px) {
+
+  /* Summary → single column */
+  .summary-grid  { grid-template-columns: 1fr; }
+  .summary-value { font-size: 20px; }
+
+  /* Nav logo text */
+  .nav-logo-text { font-size: 12px; letter-spacing: 0.5px; }
+
+  /* Modal full-width */
+  .modal { width: 100vw; border-radius: 14px 14px 0 0; margin-top: auto; }
+  .modal-backdrop.open { align-items: flex-end; }
+
+  /* Table stays scrollable */
+  table { min-width: 600px; }
+  th, td { padding: 8px 10px; font-size: 11px; }
+}
