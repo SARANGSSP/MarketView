@@ -913,3 +913,272 @@ async def handle_financials_all(request):
         return web.json_response({"error": str(e)}, status=500)
 
 
+# ── WEBSOCKET HANDLER ─────────────────────────────────────────────────────────
+async def handler(websocket):
+    remote = websocket.remote_address
+    ip     = remote[0] if remote else "unknown"
+    print(f"[WS] Client connected: {ip}")
+    current_symbol = None
+
+    # ── Rate limit ──
+    if not _check_rate_limit(ip):
+        print(f"[WS] Rate limit exceeded for {ip}")
+        await websocket.send(json.dumps({"error": "Rate limit exceeded. Please slow down."}))
+        await websocket.close(1008, "Rate limit exceeded")
+        return
+
+    # ── API key auth (if API_KEY set, first message must be the key) ──
+    if API_KEY:
+        try:
+            first_msg = await asyncio.wait_for(websocket.recv(), timeout=10)
+        except asyncio.TimeoutError:
+            await websocket.close(1008, "Auth timeout")
+            return
+        if first_msg.strip() != API_KEY:
+            print(f"[WS] Invalid API key from {ip}")
+            await websocket.send(json.dumps({"error": "Unauthorized"}))
+            await websocket.close(1008, "Unauthorized")
+            return
+
+    try:
+        async for message in websocket:
+            try:
+                symbol = message.strip().upper()
+                if not symbol:
+                    continue
+
+                print(f"[WS] {remote} requested: {symbol}")
+
+                if current_symbol and current_symbol in watchers:
+                    watchers[current_symbol].discard(websocket)
+
+                try:
+                    dp.resolve(symbol)
+                except ValueError as e:
+                    await websocket.send(json.dumps({"error": str(e)}))
+                    continue
+
+                ok = await ensure_symbol_loaded(symbol)
+                if not ok:
+                    await websocket.send(json.dumps({"error": f"Could not load data for {symbol}"}))
+                    continue
+
+                current_symbol = symbol
+                watchers[symbol].add(websocket)
+                last_watcher[symbol] = time.time()
+
+                # Send real snapshot using existing hist_data (no dummy values)
+                async with hist_data_lock:
+                    df       = hist_data[symbol]
+                    last_row = df.iloc[-1]
+                    ta_snap  = compute_snapshot_ta(symbol)  # now returns full arrays too
+
+                    history_candles = [
+                        {"t": int(idx.timestamp() * 1000),
+                         "o": round(float(r["open"]),  2),
+                         "h": round(float(r["high"]),  2),
+                         "l": round(float(r["low"]),   2),
+                         "c": round(float(r["close"]), 2),
+                         "v": int(r["volume"])}
+                        for idx, r in df.tail(150).iterrows()
+                    ]
+
+                    # Extra stats from full history buffer
+                    _typical    = (df["high"] + df["low"] + df["close"]) / 3
+                    _tvol       = df["volume"].sum()
+                    _vwap       = round(float((_typical * df["volume"]).sum() / _tvol), 2) if _tvol > 0 else None
+                    _year_df    = df.tail(252)
+                    _w52_high   = round(float(_year_df["high"].max()), 2)
+                    _w52_low    = round(float(_year_df["low"].min()),  2)
+                    _prev_close = round(float(df["close"].iloc[-2]), 2) if len(df) >= 2 else None
+
+                    snapshot = {
+                        "snapshot":       True,
+                        "candle_type":    "daily",
+                        "symbol":         symbol,
+                        "company_name":   company_names.get(symbol, symbol),
+                        "time":           int(time.time() * 1000),
+                        "open":           round(float(last_row["open"]),  2),
+                        "high":           round(float(last_row["high"]),  2),
+                        "low":            round(float(last_row["low"]),   2),
+                        "close":          round(float(last_row["close"]), 2),
+                        "volume":         int(last_row["volume"]),
+                        "session_open":   round(float(last_row["close"]), 2),
+                        "prev_close":     _prev_close,
+                        "vwap":           _vwap,
+                        "w52_high":       _w52_high,
+                        "w52_low":        _w52_low,
+                        "adjusted_price": round(float(last_row["close"]), 2),
+                        "history":        history_candles,
+                        # Scalar badges
+                        "rsi":            ta_snap.get("rsi", 50.0),
+                        "rsi_signal":     ta_snap.get("rsi_signal", "Neutral"),
+                        "macd":           ta_snap.get("macd", 0.0),
+                        "macd_signal":    ta_snap.get("macd_signal", "Neutral"),
+                        "macd_histogram": ta_snap.get("macd_histogram", 0.0),
+                        "volume_signal":  ta_snap.get("volume_signal", "Normal"),
+                        "composite_signal":      ta_snap.get("composite_signal", "Hold"),
+                        "composite_confidence":  ta_snap.get("composite_confidence", 0.55),
+                        "bb_upper":       ta_snap.get("bb_upper"),
+                        "bb_lower":       ta_snap.get("bb_lower"),
+                        "bb_mid":         ta_snap.get("bb_mid"),
+                        "support":        ta_snap.get("support"),
+                        "resistance":     ta_snap.get("resistance"),
+                        "bull_count":     ta_snap.get("bull_count", 0),
+                        "bear_count":     ta_snap.get("bear_count", 0),
+                        "neut_count":     ta_snap.get("neut_count", 0),
+                        "latest_pattern": ta_snap.get("latest_pattern", "None"),
+                        "latest_signal":  ta_snap.get("latest_signal", "Neutral"),
+                        "is_stale":       False,
+                        # Full per-candle TA arrays (aligned with history_candles, last 150)
+                        "rsi_arr":        ta_snap.get("rsi_arr",      [])[-150:],
+                        "macd_arr":       ta_snap.get("macd_arr",     [])[-150:],
+                        "signal_arr":     ta_snap.get("signal_arr",   [])[-150:],
+                        "hist_arr":       ta_snap.get("hist_arr",     [])[-150:],
+                        "bb_upper_arr":   ta_snap.get("bb_upper_arr", [])[-150:],
+                        "bb_lower_arr":   ta_snap.get("bb_lower_arr", [])[-150:],
+                        "bb_mid_arr":     ta_snap.get("bb_mid_arr",   [])[-150:],
+                    }
+                await websocket.send(json.dumps(snapshot))
+                print(f"[WS] Snapshot sent for {symbol}.")
+
+            except Exception as e:
+                print(f"[WS Handler Error]: {e}")
+
+    except websockets.exceptions.ConnectionClosed as e:
+        print(f"[WS] Connection closed: {e}")
+    finally:
+        if current_symbol:
+            watchers[current_symbol].discard(websocket)
+        print(f"[WS] Client disconnected: {remote}")
+
+# ── STARTUP ───────────────────────────────────────────────────────────────────
+async def handle_search(request):
+    q = request.query.get("q", "").strip()
+    limit = int(request.query.get("limit", 10))
+    results = dp.search(q, limit)
+    return _json_response(results)
+
+async def main():
+    print("=" * 60)
+    print("  MarketView Server – Upstox Edition")
+    print("=" * 60)
+
+    print("\n[Startup] Opening cache database…")
+    await asyncio.to_thread(cache.open)
+
+    print("\n[Startup] Loading instruments…")
+    try:
+        await asyncio.to_thread(dp.load_instruments)
+    except Exception as e:
+        print(f"[Startup] FATAL — Could not load instruments: {e}")
+        return
+
+    print("\n[Startup] Pre-loading RELIANCE baseline…")
+    await ensure_symbol_loaded("RELIANCE")
+
+    asyncio.create_task(aggregator_loop())
+    asyncio.create_task(scheduled_summaries())
+    asyncio.create_task(live_bar_loop())
+
+    print(f"\n[Startup] WebSocket server on ws://{WS_HOST}:{WS_PORT}")
+    print(f"[Startup] Frontend available at http://localhost:{REST_PORT}")
+    print(f"[Startup] DuckDNS access:   http://yourname.duckdns.org:{REST_PORT}\n")
+
+    app = web.Application()
+    cors = aiohttp_cors.setup(app, defaults={
+        "*": aiohttp_cors.ResourceOptions(
+            allow_credentials=True, expose_headers="*", allow_headers="*",
+        )
+    })
+    app.router.add_get("/history", get_history)
+    app.router.add_get("/health",  lambda r: web.json_response({"status": "ok"}))
+    app.router.add_get("/cache/stats",
+        lambda r: web.json_response(cache.stats()))
+    app.router.add_post("/cache/invalidate",
+        handle_cache_invalidate)
+    # ── Fundamentals endpoints ──────────────────────────────────────────────
+    app.router.add_get("/fundamentals",            handle_fundamentals)
+    app.router.add_get("/financials/quarterly",    handle_financials_quarterly)
+    app.router.add_get("/financials/annual",       handle_financials_annual)
+    app.router.add_get("/financials/balance-sheet",handle_balance_sheet)
+    app.router.add_get("/financials/cashflow",     handle_cashflow)
+    app.router.add_get("/financials/all",          handle_financials_all)
+    attach_auth_routes(app)  # /auth/login, /auth/callback, /auth/status
+    app.router.add_get('/api/ltp', handle_ltp)
+    attach_portfolio_routes(app)  # /auth/google/*, /portfolio, /alerts, /user
+
+    # ── Serve frontend static files ──────────────────────────────────────────
+    # marketview.html → /
+    # static/marketview.js, static/style.css → /static/
+    app.router.add_get("/search", handle_search)
+    app.router.add_get("/", lambda r: web.FileResponse("./marketview.html"))
+    app.router.add_static("/static", path="./static", name="static")
+    for route in list(app.router.routes()):
+        cors.add(route)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "localhost", REST_PORT, reuse_address=True, reuse_port=(sys.platform != "win32"))
+    try:
+        await site.start()
+    except OSError as e:
+        if e.errno in (10048, 98):   # 10048 = Windows WSAEADDRINUSE, 98 = Linux EADDRINUSE
+            print(f"\n[FATAL] Port {REST_PORT} is already in use.")
+            print(f"        A previous server.py may still be running.")
+            print(f"        On Windows, run:  taskkill /IM python.exe /F")
+            print(f"        On Linux/Mac, run: kill $(lsof -ti:{REST_PORT})")
+            print(f"        Then restart server.py.\n")
+        else:
+            print(f"\n[FATAL] Could not bind REST API: {e}\n")
+        await runner.cleanup()
+        return
+    print(f"[Startup] REST API on http://localhost:{REST_PORT}/history")
+
+    # ── Graceful shutdown ──────────────────────────────────────────────────────
+    stop_event = asyncio.Event()
+
+    def _request_shutdown():
+        print("\n[Shutdown] Signal received — shutting down cleanly…")
+        stop_event.set()
+
+    loop = asyncio.get_running_loop()
+    if sys.platform != "win32":
+        loop.add_signal_handler(signal.SIGINT,  _request_shutdown)
+        loop.add_signal_handler(signal.SIGTERM, _request_shutdown)
+
+    try:
+        ws_server = await websockets.serve(handler, WS_HOST, WS_PORT)
+    except OSError as e:
+        if e.errno in (10048, 98):
+            print(f"\n[FATAL] Port {WS_PORT} is already in use.")
+            print(f"        A previous server.py may still be running.")
+            print(f"        On Windows, run:  taskkill /IM python.exe /F\n")
+        else:
+            print(f"\n[FATAL] Could not start WebSocket server: {e}\n")
+        await runner.cleanup()
+        return
+
+    try:
+        await stop_event.wait()
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        pass
+    finally:
+        ws_server.close()
+        await ws_server.wait_closed()
+
+    # Cleanup
+    print("[Shutdown] Stopping stream…")
+    dp.stop_stream()
+    print("[Shutdown] Closing cache…")
+    cache.close()
+    print("[Shutdown] Stopping REST API…")
+    await runner.cleanup()
+    print("[Shutdown] Done. Goodbye.")
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass  # Suppress traceback — shutdown was already handled cleanly
