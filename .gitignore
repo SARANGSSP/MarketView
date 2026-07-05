@@ -1,0 +1,56 @@
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.sh
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Databases / cache (local runtime data, not source)
+cache.db
+cache.db-shm
+cache.db-wal
+*.sqlite
+*.sqlite3
+
+# Shell / system junk (these are from a Linux home dir, shouldn't be in your repo at all)
+.bashrc
+.bash_history
+.bash_logout
+.lesshst
+.profile
+.sudo_as_admin_successful
+.cache/
+
+# Backups / dumps
+postgres-backup.sql
+*.sql.bak
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+# Historical snapshots used to reconstruct commit history (not part of the app)
+splits/
+
+# Historical snapshots used to reconstruct commit history (not part of the app)
+splits/
+
+
+.env
+__pycache__/
+*.pyc
+cache.db*
+.cache/
+postgres-backup.sql
+.bashrc
+.bash_history
+.bash_logout
+.lesshst
+.profile
+.sudo_as_admin_successful
+ 
