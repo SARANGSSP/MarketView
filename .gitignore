@@ -53,5 +53,10 @@ postgres-backup.sql
 .lesshst
 .profile
 .sudo_as_admin_successful
+<<<<<<< HEAD
 Landing Page.png
 Marketview Portfolio Page.png
+# Screenshots
+*.png
+test_ebit.py
+9a29ea663ae5e733b34d6e34d46c9508bc58bc74

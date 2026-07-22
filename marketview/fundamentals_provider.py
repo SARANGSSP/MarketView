@@ -169,8 +169,23 @@ class FundamentalsProvider:
         info   = ticker.info or {}
 
         # ROCE calculation: EBIT / Capital Employed
+        # EBIT (not EBITDA — EBITDA adds back D&A and overstates ROCE) is not
+        # reliably exposed on info, so pull it from the income statement,
+        # falling back to Operating Income (economically equivalent to EBIT).
         roce = None
-        ebit              = _safe_float(info.get("ebitda"))
+        ebit = None
+        try:
+            fin = ticker.financials  # annual income statement, most-recent column first
+            if fin is not None and not fin.empty:
+                for row_name in ("EBIT", "Operating Income"):
+                    if row_name in fin.index:
+                        ebit = _safe_float(fin.loc[row_name].iloc[0])
+                        if ebit:
+                            break
+        except Exception as e:
+            log.warning("[Fundamentals] Could not read EBIT from financials for %s: %s", sym, e)
+        if ebit is None:
+            ebit = _safe_float(info.get("ebit"))  # present on some yfinance/ticker versions
         total_assets      = _safe_float(info.get("totalAssets"))
         current_liabs     = _safe_float(info.get("totalCurrentLiabilities"))
         if ebit and total_assets and current_liabs:

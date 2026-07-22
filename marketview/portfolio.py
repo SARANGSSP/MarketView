@@ -305,10 +305,13 @@ async def add_portfolio(request: web.Request):
                     INSERT INTO mv_portfolio (user_id, symbol, quantity, buy_price, notes)
                     VALUES (%s, %s, %s, %s, %s)
                     ON CONFLICT (user_id, symbol) DO UPDATE
-                        SET quantity=%s, buy_price=%s, notes=%s
+                        SET buy_price = ((mv_portfolio.quantity * mv_portfolio.buy_price)
+                                         + (excluded.quantity * excluded.buy_price))
+                                        / (mv_portfolio.quantity + excluded.quantity),
+                            quantity = mv_portfolio.quantity + excluded.quantity,
+                            notes = excluded.notes
                     RETURNING id, symbol, quantity, buy_price, notes
-                """, (user["id"], symbol, quantity, buy_price, notes,
-                      quantity, buy_price, notes))
+                """, (user["id"], symbol, quantity, buy_price, notes))
                 row = dict(cur.fetchone())
             except Exception as e:
                 return web.json_response({"error": str(e)}, status=500)
