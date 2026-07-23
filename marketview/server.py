@@ -64,14 +64,27 @@ def _check_rate_limit(ip: str) -> bool:
 tick_buffer:    dict[str, list[float]]  = defaultdict(list)
 vol_buffer:     dict[str, int]          = defaultdict(int)
 rolling_avg_vol: dict = {}  # EMA of per-symbol volume for alert checks
-hist_data:      dict[str, pd.DataFrame] = {}
+
+# hist_data used to be a single tail(500) buffer asked to be both "the last
+# 200+ trading days" AND "the live tick-by-tick series" at once. Split into:
+#   daily_data    — persistent ~200+ day series from the baseline load.
+#                   Never touched by the per-second aggregator. Source of
+#                   truth for prev_close and 52-week high/low.
+#   intraday_data — today's 1-second candles only. Reset at the start of
+#                   every new trading session. Source of truth for RSI,
+#                   MACD, BB, VWAP, support/resistance, and patterns.
+daily_data:         dict[str, pd.DataFrame] = {}
+intraday_data:      dict[str, pd.DataFrame] = {}
+session_date:       dict[str, "date"]       = {}   # symbol → IST date of current session
+session_open_price: dict[str, float]        = {}   # symbol → fixed 09:15 open for current session
+
 company_names:  dict[str, str]          = {}
 watchers:       dict[str, set]          = defaultdict(set)
 sym_to_key:     dict[str, str]          = {}
 last_tick_time: dict[str, float]        = {}   # symbol → epoch of most recent tick
 last_watcher:   dict[str, float]        = {}   # symbol → epoch when it last had watchers
 
-hist_data_lock = asyncio.Lock()          # guards hist_data mutations
+hist_data_lock = asyncio.Lock()          # guards daily_data / intraday_data mutations
 
 cache = Cache()
 dp    = DataProvider(cache=cache)
