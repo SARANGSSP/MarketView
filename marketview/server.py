@@ -26,7 +26,11 @@ import numpy as np
 import pandas as pd
 import pandas_ta as ta
 import websockets
+import zoneinfo
+from datetime import datetime as _dt, date
 from collections import defaultdict
+
+IST = zoneinfo.ZoneInfo("Asia/Kolkata")   # session-boundary + prev-close reference timezone
 
 from data_provider import DataProvider
 from token_refresh import attach_auth_routes
