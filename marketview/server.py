@@ -33,7 +33,6 @@ from collections import defaultdict
 IST = zoneinfo.ZoneInfo("Asia/Kolkata")   # session-boundary + prev-close reference timezone
 
 from data_provider import DataProvider
-from token_refresh import attach_auth_routes
 from portfolio import attach_portfolio_routes, check_alerts, broadcast_summary, send_market_open_summary, send_daily_pnl_summary
 from cache import Cache
 from fundamentals_provider import FundamentalsProvider
@@ -1176,7 +1175,6 @@ async def main():
     app.router.add_get("/financials/balance-sheet",handle_balance_sheet)
     app.router.add_get("/financials/cashflow",     handle_cashflow)
     app.router.add_get("/financials/all",          handle_financials_all)
-    attach_auth_routes(app)  # /auth/login, /auth/callback, /auth/status
     app.router.add_get('/api/ltp', handle_ltp)
     attach_portfolio_routes(app)  # /auth/google/*, /portfolio, /alerts, /user
 
