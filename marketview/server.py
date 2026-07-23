@@ -346,10 +346,11 @@ def compute_ta_for_df(df: pd.DataFrame) -> dict:
 
 def compute_snapshot_ta(symbol: str) -> dict:
     """
-    Compute TA from existing hist_data without appending a candle.
-    Used for the initial snapshot sent on WebSocket connect.
+    Compute TA from the existing session-only intraday buffer, without
+    appending a candle. Used for the initial snapshot sent on WebSocket connect.
     """
-    df = hist_data.get(symbol)
+    df = intraday_data.get(symbol)
+    
     if df is None or len(df) < 14:
         return {}
     return compute_ta_for_df(df)
