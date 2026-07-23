@@ -357,11 +357,15 @@ def compute_snapshot_ta(symbol: str) -> dict:
 # ── TECHNICAL ANALYSIS ────────────────────────────────────────────────────────
 def run_ta(symbol: str, candle: dict) -> dict | None:
     """
-    Appends the new candle to the historical buffer and recalculates all indicators.
-    Returns full analysis dict or None if not enough data.
+    Appends the new candle to the session-only intraday buffer and recalculates
+    all rolling-window indicators (RSI, MACD, BB, patterns, S/R, VWAP) from it —
+    so every bar in the window is the same 1-second granularity, never a mix of
+    daily and intraday candles. Long-horizon stats (prev_close, 52-week high/low)
+    are read from the persistent daily buffer, which this function never mutates
+    or trims, so they stay correct no matter how long the session has been running.
     """
-    df = hist_data.get(symbol)
-    if df is None or len(df) < 14:
+    daily_df = daily_data.get(symbol)
+    if daily_df is None or daily_df.empty:
         return None
 
     new_row = pd.DataFrame([{
@@ -370,7 +374,13 @@ def run_ta(symbol: str, candle: dict) -> dict | None:
         "volume": candle["volume"],
     }], index=[pd.Timestamp(candle["time"], unit="ms")])
     new_row.index.name = "time"
-    combined = pd.concat([df, new_row])
+
+    prev_intraday = intraday_data.get(symbol)
+    combined = pd.concat([prev_intraday, new_row]) if prev_intraday is not None and not prev_intraday.empty else new_row
+
+    if len(combined) < 14:
+        intraday_data[symbol] = combined
+        return None
 
     # RSI
     rsi_s = combined.ta.rsi(length=14)
@@ -426,20 +436,25 @@ def run_ta(symbol: str, candle: dict) -> dict | None:
     last_t   = last_tick_time.get(symbol, 0)
     is_stale = (time.time() - last_t) > 30 if last_t else False
 
-    # Keep buffer trimmed to last 500 candles
-    hist_data[symbol] = combined.tail(500)
+ # Keep the full session in the intraday buffer — a trading day is at most
+    # ~22,500 one-second candles, so there's no memory pressure that justifies
+    # trimming, and trimming here is exactly what caused bug #1.
+    intraday_data[symbol] = combined
 
     # ── Extra stats ──────────────────────────────────────────────────────────
-    # Prev close = second-to-last row's close in combined
-    prev_close = round(float(combined["close"].iloc[-2]), 2) if len(combined) >= 2 else None
+    # Prev close = yesterday's actual close from the persistent daily buffer —
+    # a fixed reference for the whole session, not a moving index into a
+    # buffer that a new row gets appended to every second.
+    prev_close = round(float(daily_df["close"].iloc[-1]), 2)
 
-    # VWAP = sum(typical_price * volume) / sum(volume) over the session
+    # VWAP = sum(typical_price * volume) / sum(volume) over TODAY's session only
     typical = (combined["high"] + combined["low"] + combined["close"]) / 3
     total_vol = combined["volume"].sum()
     vwap = round(float((typical * combined["volume"]).sum() / total_vol), 2) if total_vol > 0 else None
 
-    # 52-week high / low (last 252 trading days ≈ 1 year)
-    year_df = combined.tail(252)
+    # 52-week high / low from the persistent daily buffer (never touched by
+    # the per-second drain), so this is always a true ~252-trading-day window
+    year_df = daily_df.tail(252)
     w52_high = round(float(year_df["high"].max()), 2)
     w52_low  = round(float(year_df["low"].min()),  2)
 
