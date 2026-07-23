@@ -269,7 +269,11 @@ def compute_ta_for_df(df: pd.DataFrame) -> dict:
     Returns per-candle arrays suitable for the frontend charts plus
     scalar summary values for the indicator badges.
     """
-    if df is None or len(df) < 14:
+    # NOTE: pandas_ta's .ta.rsi(length=14) silently returns the raw input
+    # DataFrame (not a computed Series) when given EXACTLY 14 rows on
+    # pandas 3.x — a library quirk, confirmed via direct testing. 15+ rows
+    # works correctly, so the gate is 15, not 14, to avoid landing on it.
+    if df is None or len(df) < 15:
         return {}
 
     # RSI (per-row series)
@@ -351,7 +355,7 @@ def compute_snapshot_ta(symbol: str) -> dict:
     """
     df = intraday_data.get(symbol)
 
-    if df is None or len(df) < 14:
+    if df is None or len(df) < 15:  # keep in sync with compute_ta_for_df's gate
         return {}
     return compute_ta_for_df(df)
 
@@ -379,7 +383,7 @@ def run_ta(symbol: str, candle: dict) -> dict | None:
     prev_intraday = intraday_data.get(symbol)
     combined = pd.concat([prev_intraday, new_row]) if prev_intraday is not None and not prev_intraday.empty else new_row
 
-    if len(combined) < 14:
+    if len(combined) < 15:  # see compute_ta_for_df's note: pandas_ta breaks at exactly 14 rows
         intraday_data[symbol] = combined
         return None
 
