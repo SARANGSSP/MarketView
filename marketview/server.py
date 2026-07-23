@@ -350,7 +350,7 @@ def compute_snapshot_ta(symbol: str) -> dict:
     appending a candle. Used for the initial snapshot sent on WebSocket connect.
     """
     df = intraday_data.get(symbol)
-    
+
     if df is None or len(df) < 14:
         return {}
     return compute_ta_for_df(df)
@@ -571,13 +571,15 @@ async def aggregator_loop():
         try:
             await asyncio.sleep(CANDLE_INTERVAL)
             now = time.time()
-
             # ── Memory cleanup: evict symbols idle for CLEANUP_IDLE_SEC ──
-            for sym in list(hist_data.keys()):
+            for sym in list(daily_data.keys()):
                 if not watchers.get(sym):
                     if now - last_watcher.get(sym, now) > CLEANUP_IDLE_SEC:
                         print(f"[Aggregator] Evicting idle symbol: {sym}")
-                        hist_data.pop(sym, None)
+                        daily_data.pop(sym, None)
+                        intraday_data.pop(sym, None)
+                        session_date.pop(sym, None)
+                        session_open_price.pop(sym, None)
                         company_names.pop(sym, None)
                         sym_key = sym_to_key.pop(sym, None)
                         last_tick_time.pop(sym, None)
@@ -595,7 +597,6 @@ async def aggregator_loop():
                 vol    = vol_buffer.pop(symbol, 0)
                 if not prices:
                     continue
-
                 candle = {
                     "time":   int(time.time() * 1000),
                     "open":   prices[0],
@@ -605,9 +606,21 @@ async def aggregator_loop():
                     "volume": vol,
                 }
 
+                # ── New trading session detection ──
+                # "Day % change" and the intraday indicator window must both
+                # be pinned to a single trading session. Detect the session
+                # boundary here (once per symbol per day) rather than inside
+                # run_ta, since this is also where pct_change is computed.
+                candle_ist_date = _dt.fromtimestamp(candle["time"] / 1000, tz=IST).date()
+                if session_date.get(symbol) != candle_ist_date:
+                    session_date[symbol]       = candle_ist_date
+                    session_open_price[symbol] = candle["open"]
+                    intraday_data.pop(symbol, None)
+
                 try:
                     async with hist_data_lock:
                         result = run_ta(symbol, candle)
+
                 except Exception as e:
                     print(f"[TA ERROR] {symbol}: {e}")
                     continue
@@ -623,10 +636,13 @@ async def aggregator_loop():
                     except websockets.exceptions.ConnectionClosed:
                         dead.add(ws)
                 watchers[symbol] -= dead
-
                 # ── Fire alert checker on every aggregated candle ──────────
-                ltp        = candle["close"]
-                open_price = candle["open"]
+                ltp = candle["close"]
+                # Fixed 09:15 session open — not the current 1-second candle's
+                # own (constantly-moving) open — so "day % change" actually
+                # means "change since the market opened today," not "change
+                # in the last second."
+                open_price = session_open_price.get(symbol, candle["open"])
                 pct_change = ((ltp - open_price) / open_price * 100) if open_price else 0.0
                 avg_vol    = rolling_avg_vol.get(symbol, float(vol) or 1.0)
                 rolling_avg_vol[symbol] = avg_vol * 0.9 + float(vol) * 0.1
