@@ -664,14 +664,21 @@ async def handle_ltp(request):
             sym = sym.strip()
             if not sym:
                 continue
-            df = hist_data.get(sym)
-            if df is not None and not df.empty:
-                result[sym] = float(df["close"].iloc[-1])
+            # Prefer today's most recent intraday close (live price); fall
+            # back to the daily buffer's last close if the market hasn't
+            # ticked yet today (e.g. pre-market, or symbol just loaded).
+            intraday_df = intraday_data.get(sym)
+            if intraday_df is not None and not intraday_df.empty:
+                result[sym] = float(intraday_df["close"].iloc[-1])
+                continue
+            daily_df = daily_data.get(sym)
+            if daily_df is not None and not daily_df.empty:
+                result[sym] = float(daily_df["close"].iloc[-1])
     return web.json_response(result)
 
 # ── LOAD SYMBOL ───────────────────────────────────────────────────────────────
 async def ensure_symbol_loaded(symbol: str) -> bool:
-    if symbol in hist_data:
+    if symbol in daily_data:
         key, _ = dp.resolve(symbol)
         if key not in sym_to_key.values():
             sym_to_key[symbol] = key
@@ -682,7 +689,7 @@ async def ensure_symbol_loaded(symbol: str) -> bool:
     try:
         df, name = await fetch_with_retry(dp.get_baseline, symbol, BUFFER_MIN)
         async with hist_data_lock:
-            hist_data[symbol]     = df
+            daily_data[symbol]     = df
             company_names[symbol] = name
         key, _ = dp.resolve(symbol)
         if key not in sym_to_key.values():
@@ -1016,9 +1023,9 @@ async def handler(websocket):
                 watchers[symbol].add(websocket)
                 last_watcher[symbol] = time.time()
 
-                # Send real snapshot using existing hist_data (no dummy values)
+                # Send real snapshot using the persistent daily buffer (no dummy values)
                 async with hist_data_lock:
-                    df       = hist_data[symbol]
+                    df       = daily_data[symbol]
                     last_row = df.iloc[-1]
                     ta_snap  = compute_snapshot_ta(symbol)  # now returns full arrays too
 
@@ -1032,15 +1039,27 @@ async def handler(websocket):
                         for idx, r in df.tail(150).iterrows()
                     ]
 
-                    # Extra stats from full history buffer
-                    _typical    = (df["high"] + df["low"] + df["close"]) / 3
-                    _tvol       = df["volume"].sum()
-                    _vwap       = round(float((_typical * df["volume"]).sum() / _tvol), 2) if _tvol > 0 else None
+                    # 52-week high/low from the daily buffer (correct — this is
+                    # exactly the long-horizon series it's meant to represent).
                     _year_df    = df.tail(252)
                     _w52_high   = round(float(_year_df["high"].max()), 2)
                     _w52_low    = round(float(_year_df["low"].min()),  2)
-                    _prev_close = round(float(df["close"].iloc[-2]), 2) if len(df) >= 2 else None
 
+                    # prev_close = the daily buffer's own last row — this buffer
+                    # is never touched by the per-second drain, so its last row
+                    # is always yesterday's actual close, not a moving index.
+                    _prev_close = round(float(df["close"].iloc[-1]), 2)
+
+                    # VWAP is a session-scoped figure — meaningless over multiple
+                    # daily bars, so pull it from today's intraday buffer if the
+                    # market has ticked yet today; otherwise there's no VWAP yet.
+                    _intraday = intraday_data.get(symbol)
+                    if _intraday is not None and not _intraday.empty:
+                        _typical  = (_intraday["high"] + _intraday["low"] + _intraday["close"]) / 3
+                        _tvol     = _intraday["volume"].sum()
+                        _vwap     = round(float((_typical * _intraday["volume"]).sum() / _tvol), 2) if _tvol > 0 else None
+                    else:
+                        _vwap = None
                     snapshot = {
                         "snapshot":       True,
                         "candle_type":    "daily",
