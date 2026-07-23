@@ -26,7 +26,11 @@ import numpy as np
 import pandas as pd
 import pandas_ta as ta
 import websockets
+import zoneinfo
+from datetime import datetime as _dt, date
 from collections import defaultdict
+
+IST = zoneinfo.ZoneInfo("Asia/Kolkata")   # session-boundary + prev-close reference timezone
 
 from data_provider import DataProvider
 from token_refresh import attach_auth_routes
@@ -64,14 +68,27 @@ def _check_rate_limit(ip: str) -> bool:
 tick_buffer:    dict[str, list[float]]  = defaultdict(list)
 vol_buffer:     dict[str, int]          = defaultdict(int)
 rolling_avg_vol: dict = {}  # EMA of per-symbol volume for alert checks
-hist_data:      dict[str, pd.DataFrame] = {}
+
+# hist_data used to be a single tail(500) buffer asked to be both "the last
+# 200+ trading days" AND "the live tick-by-tick series" at once. Split into:
+#   daily_data    — persistent ~200+ day series from the baseline load.
+#                   Never touched by the per-second aggregator. Source of
+#                   truth for prev_close and 52-week high/low.
+#   intraday_data — today's 1-second candles only. Reset at the start of
+#                   every new trading session. Source of truth for RSI,
+#                   MACD, BB, VWAP, support/resistance, and patterns.
+daily_data:         dict[str, pd.DataFrame] = {}
+intraday_data:      dict[str, pd.DataFrame] = {}
+session_date:       dict[str, "date"]       = {}   # symbol → IST date of current session
+session_open_price: dict[str, float]        = {}   # symbol → fixed 09:15 open for current session
+
 company_names:  dict[str, str]          = {}
 watchers:       dict[str, set]          = defaultdict(set)
 sym_to_key:     dict[str, str]          = {}
 last_tick_time: dict[str, float]        = {}   # symbol → epoch of most recent tick
 last_watcher:   dict[str, float]        = {}   # symbol → epoch when it last had watchers
 
-hist_data_lock = asyncio.Lock()          # guards hist_data mutations
+hist_data_lock = asyncio.Lock()          # guards daily_data / intraday_data mutations
 
 cache = Cache()
 dp    = DataProvider(cache=cache)
@@ -329,10 +346,11 @@ def compute_ta_for_df(df: pd.DataFrame) -> dict:
 
 def compute_snapshot_ta(symbol: str) -> dict:
     """
-    Compute TA from existing hist_data without appending a candle.
-    Used for the initial snapshot sent on WebSocket connect.
+    Compute TA from the existing session-only intraday buffer, without
+    appending a candle. Used for the initial snapshot sent on WebSocket connect.
     """
-    df = hist_data.get(symbol)
+    df = intraday_data.get(symbol)
+
     if df is None or len(df) < 14:
         return {}
     return compute_ta_for_df(df)
@@ -340,11 +358,15 @@ def compute_snapshot_ta(symbol: str) -> dict:
 # ── TECHNICAL ANALYSIS ────────────────────────────────────────────────────────
 def run_ta(symbol: str, candle: dict) -> dict | None:
     """
-    Appends the new candle to the historical buffer and recalculates all indicators.
-    Returns full analysis dict or None if not enough data.
+    Appends the new candle to the session-only intraday buffer and recalculates
+    all rolling-window indicators (RSI, MACD, BB, patterns, S/R, VWAP) from it —
+    so every bar in the window is the same 1-second granularity, never a mix of
+    daily and intraday candles. Long-horizon stats (prev_close, 52-week high/low)
+    are read from the persistent daily buffer, which this function never mutates
+    or trims, so they stay correct no matter how long the session has been running.
     """
-    df = hist_data.get(symbol)
-    if df is None or len(df) < 14:
+    daily_df = daily_data.get(symbol)
+    if daily_df is None or daily_df.empty:
         return None
 
     new_row = pd.DataFrame([{
@@ -353,7 +375,13 @@ def run_ta(symbol: str, candle: dict) -> dict | None:
         "volume": candle["volume"],
     }], index=[pd.Timestamp(candle["time"], unit="ms")])
     new_row.index.name = "time"
-    combined = pd.concat([df, new_row])
+
+    prev_intraday = intraday_data.get(symbol)
+    combined = pd.concat([prev_intraday, new_row]) if prev_intraday is not None and not prev_intraday.empty else new_row
+
+    if len(combined) < 14:
+        intraday_data[symbol] = combined
+        return None
 
     # RSI
     rsi_s = combined.ta.rsi(length=14)
@@ -409,20 +437,25 @@ def run_ta(symbol: str, candle: dict) -> dict | None:
     last_t   = last_tick_time.get(symbol, 0)
     is_stale = (time.time() - last_t) > 30 if last_t else False
 
-    # Keep buffer trimmed to last 500 candles
-    hist_data[symbol] = combined.tail(500)
+ # Keep the full session in the intraday buffer — a trading day is at most
+    # ~22,500 one-second candles, so there's no memory pressure that justifies
+    # trimming, and trimming here is exactly what caused bug #1.
+    intraday_data[symbol] = combined
 
     # ── Extra stats ──────────────────────────────────────────────────────────
-    # Prev close = second-to-last row's close in combined
-    prev_close = round(float(combined["close"].iloc[-2]), 2) if len(combined) >= 2 else None
+    # Prev close = yesterday's actual close from the persistent daily buffer —
+    # a fixed reference for the whole session, not a moving index into a
+    # buffer that a new row gets appended to every second.
+    prev_close = round(float(daily_df["close"].iloc[-1]), 2)
 
-    # VWAP = sum(typical_price * volume) / sum(volume) over the session
+    # VWAP = sum(typical_price * volume) / sum(volume) over TODAY's session only
     typical = (combined["high"] + combined["low"] + combined["close"]) / 3
     total_vol = combined["volume"].sum()
     vwap = round(float((typical * combined["volume"]).sum() / total_vol), 2) if total_vol > 0 else None
 
-    # 52-week high / low (last 252 trading days ≈ 1 year)
-    year_df = combined.tail(252)
+    # 52-week high / low from the persistent daily buffer (never touched by
+    # the per-second drain), so this is always a true ~252-trading-day window
+    year_df = daily_df.tail(252)
     w52_high = round(float(year_df["high"].max()), 2)
     w52_low  = round(float(year_df["low"].min()),  2)
 
@@ -538,13 +571,15 @@ async def aggregator_loop():
         try:
             await asyncio.sleep(CANDLE_INTERVAL)
             now = time.time()
-
             # ── Memory cleanup: evict symbols idle for CLEANUP_IDLE_SEC ──
-            for sym in list(hist_data.keys()):
+            for sym in list(daily_data.keys()):
                 if not watchers.get(sym):
                     if now - last_watcher.get(sym, now) > CLEANUP_IDLE_SEC:
                         print(f"[Aggregator] Evicting idle symbol: {sym}")
-                        hist_data.pop(sym, None)
+                        daily_data.pop(sym, None)
+                        intraday_data.pop(sym, None)
+                        session_date.pop(sym, None)
+                        session_open_price.pop(sym, None)
                         company_names.pop(sym, None)
                         sym_key = sym_to_key.pop(sym, None)
                         last_tick_time.pop(sym, None)
@@ -562,7 +597,6 @@ async def aggregator_loop():
                 vol    = vol_buffer.pop(symbol, 0)
                 if not prices:
                     continue
-
                 candle = {
                     "time":   int(time.time() * 1000),
                     "open":   prices[0],
@@ -572,9 +606,21 @@ async def aggregator_loop():
                     "volume": vol,
                 }
 
+                # ── New trading session detection ──
+                # "Day % change" and the intraday indicator window must both
+                # be pinned to a single trading session. Detect the session
+                # boundary here (once per symbol per day) rather than inside
+                # run_ta, since this is also where pct_change is computed.
+                candle_ist_date = _dt.fromtimestamp(candle["time"] / 1000, tz=IST).date()
+                if session_date.get(symbol) != candle_ist_date:
+                    session_date[symbol]       = candle_ist_date
+                    session_open_price[symbol] = candle["open"]
+                    intraday_data.pop(symbol, None)
+
                 try:
                     async with hist_data_lock:
                         result = run_ta(symbol, candle)
+
                 except Exception as e:
                     print(f"[TA ERROR] {symbol}: {e}")
                     continue
@@ -590,10 +636,13 @@ async def aggregator_loop():
                     except websockets.exceptions.ConnectionClosed:
                         dead.add(ws)
                 watchers[symbol] -= dead
-
                 # ── Fire alert checker on every aggregated candle ──────────
-                ltp        = candle["close"]
-                open_price = candle["open"]
+                ltp = candle["close"]
+                # Fixed 09:15 session open — not the current 1-second candle's
+                # own (constantly-moving) open — so "day % change" actually
+                # means "change since the market opened today," not "change
+                # in the last second."
+                open_price = session_open_price.get(symbol, candle["open"])
                 pct_change = ((ltp - open_price) / open_price * 100) if open_price else 0.0
                 avg_vol    = rolling_avg_vol.get(symbol, float(vol) or 1.0)
                 rolling_avg_vol[symbol] = avg_vol * 0.9 + float(vol) * 0.1
@@ -615,14 +664,21 @@ async def handle_ltp(request):
             sym = sym.strip()
             if not sym:
                 continue
-            df = hist_data.get(sym)
-            if df is not None and not df.empty:
-                result[sym] = float(df["close"].iloc[-1])
+            # Prefer today's most recent intraday close (live price); fall
+            # back to the daily buffer's last close if the market hasn't
+            # ticked yet today (e.g. pre-market, or symbol just loaded).
+            intraday_df = intraday_data.get(sym)
+            if intraday_df is not None and not intraday_df.empty:
+                result[sym] = float(intraday_df["close"].iloc[-1])
+                continue
+            daily_df = daily_data.get(sym)
+            if daily_df is not None and not daily_df.empty:
+                result[sym] = float(daily_df["close"].iloc[-1])
     return web.json_response(result)
 
 # ── LOAD SYMBOL ───────────────────────────────────────────────────────────────
 async def ensure_symbol_loaded(symbol: str) -> bool:
-    if symbol in hist_data:
+    if symbol in daily_data:
         key, _ = dp.resolve(symbol)
         if key not in sym_to_key.values():
             sym_to_key[symbol] = key
@@ -633,7 +689,7 @@ async def ensure_symbol_loaded(symbol: str) -> bool:
     try:
         df, name = await fetch_with_retry(dp.get_baseline, symbol, BUFFER_MIN)
         async with hist_data_lock:
-            hist_data[symbol]     = df
+            daily_data[symbol]     = df
             company_names[symbol] = name
         key, _ = dp.resolve(symbol)
         if key not in sym_to_key.values():
@@ -967,9 +1023,9 @@ async def handler(websocket):
                 watchers[symbol].add(websocket)
                 last_watcher[symbol] = time.time()
 
-                # Send real snapshot using existing hist_data (no dummy values)
+                # Send real snapshot using the persistent daily buffer (no dummy values)
                 async with hist_data_lock:
-                    df       = hist_data[symbol]
+                    df       = daily_data[symbol]
                     last_row = df.iloc[-1]
                     ta_snap  = compute_snapshot_ta(symbol)  # now returns full arrays too
 
@@ -983,15 +1039,27 @@ async def handler(websocket):
                         for idx, r in df.tail(150).iterrows()
                     ]
 
-                    # Extra stats from full history buffer
-                    _typical    = (df["high"] + df["low"] + df["close"]) / 3
-                    _tvol       = df["volume"].sum()
-                    _vwap       = round(float((_typical * df["volume"]).sum() / _tvol), 2) if _tvol > 0 else None
+                    # 52-week high/low from the daily buffer (correct — this is
+                    # exactly the long-horizon series it's meant to represent).
                     _year_df    = df.tail(252)
                     _w52_high   = round(float(_year_df["high"].max()), 2)
                     _w52_low    = round(float(_year_df["low"].min()),  2)
-                    _prev_close = round(float(df["close"].iloc[-2]), 2) if len(df) >= 2 else None
 
+                    # prev_close = the daily buffer's own last row — this buffer
+                    # is never touched by the per-second drain, so its last row
+                    # is always yesterday's actual close, not a moving index.
+                    _prev_close = round(float(df["close"].iloc[-1]), 2)
+
+                    # VWAP is a session-scoped figure — meaningless over multiple
+                    # daily bars, so pull it from today's intraday buffer if the
+                    # market has ticked yet today; otherwise there's no VWAP yet.
+                    _intraday = intraday_data.get(symbol)
+                    if _intraday is not None and not _intraday.empty:
+                        _typical  = (_intraday["high"] + _intraday["low"] + _intraday["close"]) / 3
+                        _tvol     = _intraday["volume"].sum()
+                        _vwap     = round(float((_typical * _intraday["volume"]).sum() / _tvol), 2) if _tvol > 0 else None
+                    else:
+                        _vwap = None
                     snapshot = {
                         "snapshot":       True,
                         "candle_type":    "daily",
