@@ -86,6 +86,28 @@ def _is_market_hours() -> bool:
     return datetime.time(9, 15) <= t <= datetime.time(15, 30)
 
 
+def _seconds_until_next_session(ist_now) -> int:
+    """
+    Seconds from now until the next trading session's open (09:15 IST),
+    skipping weekends. Used for the post-close "1d" cache entry — it's
+    meant to "lock in" today's completed intraday until trading resumes,
+    not expire on the same 15-minute TTL used during market hours (bug #8).
+
+    Doesn't account for market holidays (that needs the Upstox holiday
+    calendar, which lives in market_calendar.py — cache.py has no API
+    client to fetch it with). Worst case on a holiday morning, this
+    underestimates by one day and the cache refreshes a bit early,
+    re-deriving the same (still-correct) snapshot — harmless, just a
+    slightly wasted fetch, never a wrong value.
+    """
+    import datetime
+    next_day = ist_now.date() + datetime.timedelta(days=1)
+    while next_day.weekday() >= 5:   # skip Saturday / Sunday
+        next_day += datetime.timedelta(days=1)
+    next_open = datetime.datetime.combine(next_day, datetime.time(9, 15))
+    return max(60, int((next_open - ist_now).total_seconds()))
+
+
 # ── Cache class ───────────────────────────────────────────────────────────────
 
 class Cache:
@@ -230,18 +252,11 @@ class Cache:
         self._set("instruments:nse", raw_bytes, TTL_INSTRUMENTS)
 
     # ── OHLCV DataFrames ──
-
     def get_ohlcv(self, symbol: str, range_: str) -> Optional[tuple[pd.DataFrame, str]]:
         """
         Return (DataFrame, company_name) for the given symbol + range, or None on miss.
         range_ is one of: 'baseline', '1d', '1w', '1m', '1y', '5y'
         """
-        # Outside market hours, intraday cache can live longer (60 min)
-        if range_ == "1d" and not _is_market_hours():
-            ttl_hint = TTL_HISTORY_1Y   # after close, intraday is final for the day
-        else:
-            ttl_hint = _ttl_for_range(range_)   # not used for get, just for context
-
         key = f"ohlcv:{symbol.upper()}:{range_}"
         return self._get(key)
 
@@ -249,14 +264,19 @@ class Cache:
         """Store (DataFrame, company_name) tuple."""
         key = f"ohlcv:{symbol.upper()}:{range_}"
 
-        # Intraday TTL extends to end-of-day outside market hours
+        # Post-close "1d" entry: lock in today's completed intraday until
+        # the next session actually opens, not the same 15-minute TTL used
+        # during live market hours (that mismatch was bug #8 — the old code
+        # reused TTL_HISTORY_1Y, which is also 15 minutes, so the comment's
+        # stated intent never actually held).
         if range_ == "1d" and not _is_market_hours():
-            ttl = TTL_HISTORY_1Y          # lock in today's completed intraday
+            import datetime
+            ist_now = datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)
+            ttl = _seconds_until_next_session(ist_now)
         else:
             ttl = _ttl_for_range(range_)
 
         self._set(key, (df, name), ttl)
-
     # ── Cache management ──
 
     def invalidate(self, symbol: str, range_: str | None = None):

@@ -4,7 +4,8 @@ import gzip
 import threading
 import requests
 import pandas as pd
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+import zoneinfo
 from dotenv import load_dotenv
 from typing import Optional
 
@@ -15,6 +16,10 @@ try:
     import upstox_client
 except ImportError:
     raise ImportError("Run:  pip install upstox-python-sdk")
+
+from market_calendar import MarketCalendar
+
+IST = zoneinfo.ZoneInfo("Asia/Kolkata")
 
 
 class DataProvider:
@@ -38,6 +43,7 @@ class DataProvider:
         self._config = upstox_client.Configuration()
         self._config.access_token = token
         self._api_client = upstox_client.ApiClient(self._config)
+        self._calendar = MarketCalendar(self._api_client)  # authoritative open/closed source (bug #6/#7/#8)
 
         self._symbol_to_key: dict[str, str] = {}
         self._key_to_name:   dict[str, str] = {}
@@ -202,28 +208,47 @@ class DataProvider:
             resp = api.get_intra_day_candle_data(key, "minutes", "1")
         except Exception as e:
             raise RuntimeError(f"Intraday API failed for {symbol}: {e}")
-
         raw = getattr(getattr(resp, "data", None), "candles", None) or []
+
         if not raw:
-            print(f"[DataProvider] {symbol}: no intraday candles (market closed?) - falling back to baseline.")
+            market_open = self._calendar.is_market_open()
+
+            if market_open:
+                print(f"[DataProvider] {symbol}: market is OPEN per calendar but Upstox "
+                      f"returned no intraday candles — possible API issue or trading halt.")
+                fallback_ttl_range = "1d"  # short TTL (30s, see cache.py TTL_INTRADAY)
+            else:
+                print(f"[DataProvider] {symbol}: market is CLOSED (confirmed via calendar) "
+                      f"— falling back to baseline.")
+                fallback_ttl_range = "1d"  # cache.py extends this TTL for closed-market "1d"
+
             try:
                 baseline_df, _ = self.get_baseline(symbol, min_candles=0)
                 if baseline_df is not None and len(baseline_df):
                     last = baseline_df.iloc[-1]
+                    last_row_date = baseline_df.index[-1].date()
+
+                    if not market_open and last_row_date < (datetime.now(IST).date()):
+                        print(f"[DataProvider] {symbol}: today's daily candle not yet "
+                              f"published (baseline's last row is {last_row_date}) — "
+                              f"serving prior close ({last['close']:.2f}) as best available.")
+
                     df = pd.DataFrame(
                         [[last["open"], last["high"], last["low"], last["close"], last["volume"]]],
                         index=pd.DatetimeIndex([baseline_df.index[-1]]),
                         columns=["open", "high", "low", "close", "volume"],
                     )
                     df.index.name = "time"
-                    print(f"[DataProvider] {symbol}: baseline LTP fallback -> {last['close']:.2f}")
+                    print(f"[DataProvider] {symbol}: baseline fallback -> {last['close']:.2f}")
+                    if self._cache:
+                        self._cache.set_ohlcv(symbol, fallback_ttl_range, df, name)
+
                     return df, name
             except Exception as be:
                 print(f"[DataProvider] {symbol}: baseline fallback failed: {be}")
             df = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
             df.index.name = "time"
             return df, name
-
         df = pd.DataFrame(raw, columns=["time", "open", "high", "low", "close", "volume", "oi"])
         df["time"] = pd.to_datetime(df["time"])
         df = df.set_index("time")[["open", "high", "low", "close", "volume"]]
