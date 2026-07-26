@@ -80,7 +80,11 @@ class DataProvider:
 
         self._streamer  = None
         self._stop_flag = None
-
+        self._subscribed_keys: set[str] = set()
+        self._streamer_ready = False          # True only after "open" fires
+        self._stream_lock = threading.Lock()  # guards subscribe/unsubscribe calls
+        self._on_tick_callback = None
+        self._on_error_callback = None
         # Injected cache instance (cache.Cache or None)
         self._cache = cache
 
@@ -355,6 +359,10 @@ class DataProvider:
 
         stop_flag = threading.Event()
         self._stop_flag = stop_flag
+        self._streamer_ready   = False
+        self._subscribed_keys  = set(instrument_keys)
+        self._on_tick_callback  = on_tick_callback
+        self._on_error_callback = on_error_callback
 
         def _on_message(message: dict):
             feeds = message.get("feeds", {})
@@ -379,21 +387,28 @@ class DataProvider:
                     upstox_client.ApiClient(self._config)
                 )
                 self._streamer = streamer
-
                 def _on_open_inner():
                     nonlocal reconnect_delay
                     reconnect_delay = 5   # reset to base on successful connect
-                    print(f"[DataProvider] Stream opened. Subscribing to {instrument_keys}")
-                    streamer.subscribe(instrument_keys, "full")
+                    # Subscribe to whatever the current full key set is —
+                    # not the `instrument_keys` this closure captured — so
+                    # that keys added in-place via add_symbols() after this
+                    # start_stream() call are still picked up on reconnect.
+                    current_keys = list(self._subscribed_keys)
+                    print(f"[DataProvider] Stream opened. Subscribing to {current_keys}")
+                    streamer.subscribe(current_keys, "full")
+                    self._streamer_ready = True
 
                 def _on_close_inner(*args):
                     print("[DataProvider] Stream closed.")
                     self._streamer = None
+                    self._streamer_ready = False
                     closed_event.set()
 
                 def _on_error_inner(*args):
                     err = args[0] if args else "unknown error"
                     print(f"[DataProvider] Stream error: {err}")
+                    self._streamer_ready = False
                     if on_error_callback:
                         on_error_callback(err)
                     closed_event.set()
@@ -419,6 +434,62 @@ class DataProvider:
 
         t = threading.Thread(target=_run_streamer, daemon=True, name="upstox-stream")
         t.start()
+    def add_symbols(self, instrument_keys: list[str], on_tick_callback=None, on_error_callback=None):
+        """
+        Subscribe additional instrument_keys on the already-open stream
+        without tearing it down (bug #12 fix). Upstox's MarketDataStreamerV3
+        supports subscribing in place via streamer.subscribe(), which both
+        pushes the delta over the live socket immediately and updates the
+        SDK's own internal subscription set, so a future auto-reconnect
+        re-subscribes to everything — not just the keys from the original
+        start_stream() call.
+
+        on_tick_callback/on_error_callback only matter for the very first
+        call (when no stream is open yet) or if the in-place subscribe
+        fails and a full start_stream() fallback is needed; on every other
+        call the stream's existing callbacks are reused automatically.
+        """
+        new_keys = [k for k in instrument_keys if k not in self._subscribed_keys]
+        if not new_keys:
+            return
+
+        with self._stream_lock:
+            if self._streamer is not None and self._streamer_ready:
+                try:
+                    self._streamer.subscribe(new_keys, "full")
+                    self._subscribed_keys.update(new_keys)
+                    print(f"[DataProvider] Subscribed in-place to {new_keys} "
+                          f"(no reconnect, no interruption to other watchers)")
+                    return
+                except Exception as e:
+                    print(f"[DataProvider] In-place subscribe failed ({e}) — "
+                          f"falling back to full stream restart")
+
+        # No stream open yet, or in-place subscribe failed — start fresh
+        # with the full accumulated key set.
+        all_keys = list(self._subscribed_keys | set(new_keys))
+        cb  = on_tick_callback  or self._on_tick_callback
+        ecb = on_error_callback or self._on_error_callback
+        self.start_stream(all_keys, cb, ecb)
+
+    def remove_symbols(self, instrument_keys: list[str]):
+        """
+        Unsubscribe instrument_keys from the live stream without restarting
+        it (bug #12 fix — used when an idle symbol is evicted).
+        """
+        keys_to_remove = [k for k in instrument_keys if k in self._subscribed_keys]
+        if not keys_to_remove:
+            return
+
+        with self._stream_lock:
+            if self._streamer is not None and self._streamer_ready:
+                try:
+                    self._streamer.unsubscribe(keys_to_remove)
+                    print(f"[DataProvider] Unsubscribed in-place from {keys_to_remove}")
+                except Exception as e:
+                    print(f"[DataProvider] In-place unsubscribe failed ({e}) "
+                          f"— continuing, key will just stop ticking")
+            self._subscribed_keys.difference_update(keys_to_remove)
 
     def stop_stream(self):
         if self._stop_flag:
@@ -429,3 +500,6 @@ class DataProvider:
             except Exception:
                 pass
             self._streamer = None
+        self._streamer_ready = False
+        self._subscribed_keys = set()
+

@@ -587,10 +587,8 @@ async def aggregator_loop():
                         sym_key = sym_to_key.pop(sym, None)
                         last_tick_time.pop(sym, None)
                         last_watcher.pop(sym, None)
-                        # Restart stream without the evicted key
-                        if sym_key and sym_to_key:
-                            dp.start_stream(list(sym_to_key.values()), on_tick)
-
+                        if sym_key:
+                            dp.remove_symbols([sym_key])
             # ── Drain tick buffers and broadcast ──
             for symbol, ticks in list(tick_buffer.items()):
                 if not ticks:
@@ -685,8 +683,13 @@ async def ensure_symbol_loaded(symbol: str) -> bool:
         key, _ = dp.resolve(symbol)
         if key not in sym_to_key.values():
             sym_to_key[symbol] = key
-            dp.start_stream(list(sym_to_key.values()), on_tick)
-            print(f"[Server] Subscribed to stream (from cache): {list(sym_to_key.values())}")
+            # Bug #12 fix: subscribe just this key on the existing stream
+            # instead of restarting it (which used to drop every other
+            # watcher's live data for a moment on every new symbol).
+            # First-ever call falls back to a real start_stream() inside
+            # add_symbols() itself, so this is safe when no stream exists yet.
+            dp.add_symbols([key], on_tick)
+            print(f"[Server] Subscribed to stream (from cache): {key}")
         return True
     print(f"[Server] Loading baseline for {symbol}…")
     try:
@@ -697,8 +700,8 @@ async def ensure_symbol_loaded(symbol: str) -> bool:
         key, _ = dp.resolve(symbol)
         if key not in sym_to_key.values():
             sym_to_key[symbol] = key
-            dp.start_stream(list(sym_to_key.values()), on_tick)
-            print(f"[Server] Subscribed to stream: {list(sym_to_key.values())}")
+            dp.add_symbols([key], on_tick)
+            print(f"[Server] Subscribed to stream: {key}")
         return True
     except Exception as e:
         print(f"[Server] Failed to load {symbol}: {e}")
