@@ -564,16 +564,42 @@ async def send_daily_pnl_summary(user_id: int, whatsapp: str, name: str):
                 holdings = cur.fetchall()
         if not holdings:
             return
+
         import aiohttp as _aiohttp
         ltp_map = {}
+        ltp_fetch_ok = False
         try:
             async with _aiohttp.ClientSession() as session:
                 syms = [h['symbol'] for h in holdings]
                 async with session.get('http://localhost:8000/api/ltp?symbols=' + ','.join(syms)) as r:
                     if r.status == 200:
-                        ltp_map = await r.json()
+                        body = await r.json()
+                        if isinstance(body, dict) and body:
+                            ltp_map = body
+                            ltp_fetch_ok = True
+                        else:
+                            log.warning('[PnL] LTP fetch returned an empty/malformed body')
+                    else:
+                        log.warning('[PnL] LTP fetch returned status %s', r.status)
         except Exception as e:
             log.warning('[PnL] LTP fetch failed: %s', e)
+
+        if not ltp_fetch_ok:
+            # OLD BEHAVIOR (bug #11): ltp_map stayed {}, so ltp_map.get(sym, avg)
+            # silently defaulted every holding's LTP to its own buy price,
+            # forcing pnl = (ltp - avg) * qty = 0 for every single row —
+            # mathematically indistinguishable from a genuinely flat day.
+            # Be honest about the failure instead of fabricating a report.
+            log.error('[DailyPnL] user %s: LTP fetch failed or returned no data — '
+                      'skipping report rather than sending fabricated 0%% P&L', user_id)
+            await send_whatsapp(
+                whatsapp,
+                '*MarketView End-of-Day P&L Report*' + chr(10) + date_str + chr(10) + chr(10) +
+                "Couldn't fetch live prices for today's report, so it's being skipped "
+                "rather than showing inaccurate numbers. We'll try again tomorrow."
+            )
+            return
+
         total_invested = total_current = 0.0
         sep = '-' * 36
         rows = [
@@ -582,13 +608,21 @@ async def send_daily_pnl_summary(user_id: int, whatsapp: str, name: str):
         ]
         for h in holdings:
             sym = h['symbol']; qty = h['quantity']; avg = h['buy_price']
+            price_available = sym in ltp_map
             ltp = ltp_map.get(sym, avg)
             pnl = (ltp - avg) * qty
             pct = ((ltp - avg) / avg * 100) if avg else 0
             total_invested += qty * avg
             total_current  += qty * ltp
-            pnl_str = ('+' if pnl >= 0 else '') + 'Rs.' + format(abs(pnl), ',.0f')
-            pct_str = ('+' if pct >= 0 else '') + format(pct, '.1f') + '%'
+            if price_available:
+                pnl_str = ('+' if pnl >= 0 else '') + 'Rs.' + format(abs(pnl), ',.0f')
+                pct_str = ('+' if pct >= 0 else '') + format(pct, '.1f') + '%'
+            else:
+                # This specific symbol was missing from an otherwise-successful
+                # response (e.g. not currently tracked/loaded) — mark it N/A
+                # rather than silently rendering it as a flat 0% for this holding.
+                pnl_str = 'N/A'
+                pct_str = 'N/A'
             rows.append('{:<10} {:>8} {:>7} {:>9}'.format(
                 sym[:10],
                 'Rs.' + format(ltp, ',.0f'),
