@@ -4,7 +4,8 @@ import gzip
 import threading
 import requests
 import pandas as pd
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+import zoneinfo
 from dotenv import load_dotenv
 from typing import Optional
 
@@ -16,6 +17,36 @@ try:
 except ImportError:
     raise ImportError("Run:  pip install upstox-python-sdk")
 
+from market_calendar import MarketCalendar
+
+IST = zoneinfo.ZoneInfo("Asia/Kolkata")
+
+def parse_feed_tick(feed: dict) -> tuple[float, int, float, float]:
+    """
+    Extract (ltp, volume, bid, ask) from one symbol's entry in an Upstox V3
+    "full" mode WebSocket feed message.
+
+    bid/ask come from marketLevel.bidAskQuote[0] (the best/top-of-book depth
+    level) — real prices, present because the stream subscribes in "full"
+    mode. This replaces a previous version that read tbq/tsq out of ltpc:
+    those are total buy/sell QUANTITY fields (share counts), not prices, and
+    they aren't even located inside ltpc in Upstox's actual schema — they're
+    siblings of it under marketFF (see bug audit #9).
+
+    Raises KeyError/TypeError/ValueError on malformed input, same as the
+    inline code this was extracted from — callers should catch those.
+    """
+    mff  = feed.get("fullFeed")["marketFF"]
+    ltpc = mff["ltpc"]
+    ltp  = float(ltpc.get("ltp", 0))
+    vol  = int(mff.get("v", 0))
+
+    depth = mff.get("marketLevel", {}).get("bidAskQuote", [])
+    top   = depth[0] if depth else {}
+    bid   = float(top.get("bidP", ltp))
+    ask   = float(top.get("askP", ltp))
+
+    return ltp, vol, bid, ask
 
 class DataProvider:
     """
@@ -38,6 +69,7 @@ class DataProvider:
         self._config = upstox_client.Configuration()
         self._config.access_token = token
         self._api_client = upstox_client.ApiClient(self._config)
+        self._calendar = MarketCalendar(self._api_client)  # authoritative open/closed source (bug #6/#7/#8)
 
         self._symbol_to_key: dict[str, str] = {}
         self._key_to_name:   dict[str, str] = {}
@@ -202,21 +234,41 @@ class DataProvider:
             resp = api.get_intra_day_candle_data(key, "minutes", "1")
         except Exception as e:
             raise RuntimeError(f"Intraday API failed for {symbol}: {e}")
-
         raw = getattr(getattr(resp, "data", None), "candles", None) or []
+
         if not raw:
-            print(f"[DataProvider] {symbol}: no intraday candles (market closed?) - falling back to baseline.")
+            market_open = self._calendar.is_market_open()
+
+            if market_open:
+                print(f"[DataProvider] {symbol}: market is OPEN per calendar but Upstox "
+                      f"returned no intraday candles — possible API issue or trading halt.")
+                fallback_ttl_range = "1d"  # short TTL (30s, see cache.py TTL_INTRADAY)
+            else:
+                print(f"[DataProvider] {symbol}: market is CLOSED (confirmed via calendar) "
+                      f"— falling back to baseline.")
+                fallback_ttl_range = "1d"  # cache.py extends this TTL for closed-market "1d"
+
             try:
                 baseline_df, _ = self.get_baseline(symbol, min_candles=0)
                 if baseline_df is not None and len(baseline_df):
                     last = baseline_df.iloc[-1]
+                    last_row_date = baseline_df.index[-1].date()
+
+                    if not market_open and last_row_date < (datetime.now(IST).date()):
+                        print(f"[DataProvider] {symbol}: today's daily candle not yet "
+                              f"published (baseline's last row is {last_row_date}) — "
+                              f"serving prior close ({last['close']:.2f}) as best available.")
+
                     df = pd.DataFrame(
                         [[last["open"], last["high"], last["low"], last["close"], last["volume"]]],
                         index=pd.DatetimeIndex([baseline_df.index[-1]]),
                         columns=["open", "high", "low", "close", "volume"],
                     )
                     df.index.name = "time"
-                    print(f"[DataProvider] {symbol}: baseline LTP fallback -> {last['close']:.2f}")
+                    print(f"[DataProvider] {symbol}: baseline fallback -> {last['close']:.2f}")
+                    if self._cache:
+                        self._cache.set_ohlcv(symbol, fallback_ttl_range, df, name)
+
                     return df, name
             except Exception as be:
                 print(f"[DataProvider] {symbol}: baseline fallback failed: {be}")
@@ -311,12 +363,7 @@ class DataProvider:
                 print(f"[DataProvider] WS msg (no feeds): {str(message)[:200]}")
             for ikey, feed in feeds.items():
                 try:
-                    mff  = feed.get("fullFeed")["marketFF"]
-                    ltpc = mff["ltpc"]
-                    ltp  = float(ltpc.get("ltp", 0))
-                    vol  = int(mff.get("v", 0))
-                    bid  = float(ltpc.get("tbq", ltp))
-                    ask  = float(ltpc.get("tsq", ltp))
+                    ltp, vol, bid, ask = parse_feed_tick(feed)
                     sym  = self._key_to_symbol.get(ikey, ikey)
                     print(f"[DataProvider] TICK {sym}: ltp={ltp} vol={vol}")
                     on_tick_callback(sym, ltp, vol, bid, ask)
