@@ -275,7 +275,6 @@ class DataProvider:
             df = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
             df.index.name = "time"
             return df, name
-
         df = pd.DataFrame(raw, columns=["time", "open", "high", "low", "close", "volume", "oi"])
         df["time"] = pd.to_datetime(df["time"])
         df = df.set_index("time")[["open", "high", "low", "close", "volume"]]
