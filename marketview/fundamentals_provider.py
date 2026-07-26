@@ -29,7 +29,7 @@ Usage:
 import os
 import logging
 import asyncio
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta
 from typing import Optional
 
 import numpy as np
@@ -96,10 +96,11 @@ class FundamentalsProvider:
     Provides fundamental financial data for NSE stocks.
     All public methods are async — they call blocking I/O via asyncio.to_thread.
     """
-
     STALE_HOURS_RATIOS   = 24
     STALE_HOURS_QUARTERLY = 24
     STALE_DAYS_ANNUAL    = 7
+
+    _quarterly_schema_ensured = False   # tracks whether the fetched_at migration has run
 
     # ── Internal: staleness checks ────────────────────────────────────────────
 
@@ -120,26 +121,52 @@ class FundamentalsProvider:
         except Exception as e:
             log.warning("[Fundamentals] Staleness check failed: %s", e)
             return True
-
-    def _is_quarterly_stale(self, symbol: str) -> bool:
-        """Return True if quarterly data is missing or older than STALE_HOURS_QUARTERLY."""
+    def _ensure_quarterly_schema(self):
+        """
+        quarterly_results had no fetched_at column — _is_quarterly_stale()
+        was comparing the age of the most recent REPORTED FISCAL QUARTER
+        (period, e.g. "2026-03-31") against a threshold meant for "how long
+        since we last fetched this from the API". Those are unrelated: a
+        quarter's period-end date is naturally 30-120+ days old by the time
+        it's even reported, regardless of whether we fetched it five
+        minutes ago or five weeks ago. Add the column this check actually
+        needs — idempotent, safe to call repeatedly.
+        """
+        if self._quarterly_schema_ensured:
+            return
         try:
             with _get_conn() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "SELECT MAX(period) FROM quarterly_results WHERE symbol = %s",
+                        "ALTER TABLE quarterly_results "
+                        "ADD COLUMN IF NOT EXISTS fetched_at TIMESTAMP DEFAULT NOW()"
+                    )
+                conn.commit()
+            FundamentalsProvider._quarterly_schema_ensured = True
+        except Exception as e:
+            log.warning("[Fundamentals] Could not ensure quarterly_results.fetched_at column: %s", e)
+
+    def _is_quarterly_stale(self, symbol: str) -> bool:
+        """Return True if quarterly data is missing or older than STALE_HOURS_QUARTERLY."""
+        self._ensure_quarterly_schema()
+        try:
+            with _get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT MAX(fetched_at) FROM quarterly_results WHERE symbol = %s",
                         (symbol.upper(),)
                     )
                     row = cur.fetchone()
             if not row or not row[0]:
                 return True
-            # Stale if the most recent fetch was more than 24h ago (we check by period age)
-            age = date.today() - row[0]
-            return age.days > self.STALE_HOURS_QUARTERLY
+            # Genuinely hour-based now — was previously comparing the age of
+            # the reported fiscal period (weeks/months old by definition)
+            # against a threshold named/documented as hours (bug #10).
+            age = datetime.utcnow() - row[0]
+            return age > timedelta(hours=self.STALE_HOURS_QUARTERLY)
         except Exception as e:
             log.warning("[Fundamentals] Quarterly staleness check failed: %s", e)
             return True
-
     def _is_annual_stale(self, symbol: str) -> bool:
         """Return True if annual data is missing or older than STALE_DAYS_ANNUAL."""
         try:
@@ -258,6 +285,8 @@ class FundamentalsProvider:
             log.warning("[Fundamentals] No quarterly financials returned for %s", sym)
             return rows
 
+        self._ensure_quarterly_schema()
+
         # yfinance quarterly_earnings has EPS per quarter
         qe = ticker.quarterly_earnings
 
@@ -283,7 +312,6 @@ class FundamentalsProvider:
                             eps = _safe_float(qe.loc[period, "Earnings"])
                         except (KeyError, TypeError):
                             pass
-
                     row = {
                         "symbol":          sym,
                         "period":          period.date(),
@@ -292,19 +320,21 @@ class FundamentalsProvider:
                         "operating_profit":operating_profit,
                         "net_profit":      net_profit,
                         "eps":             eps,
+                        "fetched_at":      datetime.utcnow(),
                     }
                     cur.execute("""
                         INSERT INTO quarterly_results
-                            (symbol, period, sales, expenses, operating_profit, net_profit, eps)
+                            (symbol, period, sales, expenses, operating_profit, net_profit, eps, fetched_at)
                         VALUES
                             (%(symbol)s, %(period)s, %(sales)s, %(expenses)s,
-                             %(operating_profit)s, %(net_profit)s, %(eps)s)
+                             %(operating_profit)s, %(net_profit)s, %(eps)s, %(fetched_at)s)
                         ON CONFLICT (symbol, period) DO UPDATE SET
                             sales            = EXCLUDED.sales,
                             expenses         = EXCLUDED.expenses,
                             operating_profit = EXCLUDED.operating_profit,
                             net_profit       = EXCLUDED.net_profit,
-                            eps              = EXCLUDED.eps
+                            eps              = EXCLUDED.eps,
+                            fetched_at       = EXCLUDED.fetched_at
                     """, row)
                     rows.append(row)
             conn.commit()
