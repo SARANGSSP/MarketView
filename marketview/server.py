@@ -18,6 +18,7 @@ import aiohttp_cors
 log = logging.getLogger("server")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 import asyncio
+import threading
 import json
 import signal
 import sys
@@ -88,6 +89,7 @@ last_tick_time: dict[str, float]        = {}   # symbol → epoch of most recent
 last_watcher:   dict[str, float]        = {}   # symbol → epoch when it last had watchers
 
 hist_data_lock = asyncio.Lock()          # guards daily_data / intraday_data mutations
+tick_buffer_lock = threading.Lock()
 
 cache = Cache()
 dp    = DataProvider(cache=cache)
@@ -95,9 +97,10 @@ fp    = FundamentalsProvider()
 
 # ── TICK CALLBACK ─────────────────────────────────────────────────────────────
 def on_tick(symbol: str, ltp: float, volume: int, bid: float, ask: float):
-    tick_buffer[symbol].append(ltp)
-    vol_buffer[symbol] += volume
-    last_tick_time[symbol] = time.time()
+    with tick_buffer_lock:
+        tick_buffer[symbol].append(ltp)
+        vol_buffer[symbol] += volume
+    last_tick_time[symbol] = time.time()  # single atomic dict write, safe unlocked
 
 # ── EXPONENTIAL BACKOFF ───────────────────────────────────────────────────────
 async def fetch_with_retry(fn, *args, **kwargs):
@@ -347,16 +350,38 @@ def compute_ta_for_df(df: pd.DataFrame) -> dict:
     }
 
 
-def compute_snapshot_ta(symbol: str) -> dict:
+async def compute_snapshot_ta(symbol: str) -> dict:
     """
     Compute TA from the existing session-only intraday buffer, without
     appending a candle. Used for the initial snapshot sent on WebSocket connect.
+
+    Bug #14 fix: a freshly loaded or just-reconnected symbol's live buffer
+    starts empty, so the very first snapshot used to show blank/default
+    indicators for the first ~15 seconds until enough live 1-second candles
+    accumulated — genuinely no data existed yet in-process, even though
+    Upstox already has today's session-so-far available via get_intraday()
+    (1-minute candles from market open — defined in data_provider.py but,
+    until this fix, never actually called anywhere).
+
+    This fallback is used ONLY for this one-time snapshot. run_ta()'s
+    ongoing live indicator computation is untouched and still operates on
+    pure same-granularity 1-second candles only — this doesn't reintroduce
+    bug #1's mixed-granularity averaging, since the two never get combined
+    into the same rolling window.
     """
     df = intraday_data.get(symbol)
+    if df is not None and len(df) >= 15:  # keep in sync with compute_ta_for_df's gate
+        return compute_ta_for_df(df)
 
-    if df is None or len(df) < 15:  # keep in sync with compute_ta_for_df's gate
-        return {}
-    return compute_ta_for_df(df)
+    try:
+        minute_df, _ = await fetch_with_retry(dp.get_intraday, symbol)
+        if minute_df is not None and len(minute_df) >= 15:
+            print(f"[Server] {symbol}: live buffer not warm yet, using "
+                  f"{len(minute_df)} of today's 1-minute candles for initial snapshot")
+            return compute_ta_for_df(minute_df)
+    except Exception as e:
+        print(f"[Server] {symbol}: get_intraday fallback for snapshot failed: {e}")
+    return {}
 
 # ── TECHNICAL ANALYSIS ────────────────────────────────────────────────────────
 def run_ta(symbol: str, candle: dict) -> dict | None:
@@ -502,12 +527,20 @@ async def live_bar_loop():
     while True:
         try:
             await asyncio.sleep(0.25)
-            for symbol, ticks in list(tick_buffer.items()):
-                if not ticks or not watchers.get(symbol):
+            # Snapshot everything shared with on_tick() under the lock first
+            # — iterating tick_buffer.items() while the OS thread mutates it
+            # (e.g. defaultdict auto-creating a new key) can otherwise raise
+            # "dictionary changed size during iteration", not just risk a
+            # lost tick (bug #15).
+            with tick_buffer_lock:
+                snapshot = [
+                    (symbol, list(ticks), vol_buffer.get(symbol, 0))
+                    for symbol, ticks in tick_buffer.items()
+                    if ticks
+                ]
+            for symbol, prices, vol in snapshot:
+                if not watchers.get(symbol):
                     continue
-                # Peek — do NOT pop; the 1s aggregator will drain these
-                prices = list(ticks)
-                vol    = vol_buffer.get(symbol, 0)
                 live_bar = {
                     "live_bar": True,
                     "symbol":   symbol,
@@ -590,14 +623,16 @@ async def aggregator_loop():
                         if sym_key:
                             dp.remove_symbols([sym_key])
             # ── Drain tick buffers and broadcast ──
-            for symbol, ticks in list(tick_buffer.items()):
-                if not ticks:
-                    continue
 
-                prices = tick_buffer.pop(symbol, [])
-                vol    = vol_buffer.pop(symbol, 0)
-                if not prices:
-                    continue
+            with tick_buffer_lock:
+                drained = {}
+                for symbol in list(tick_buffer.keys()):
+                    prices = tick_buffer.pop(symbol, [])
+                    vol    = vol_buffer.pop(symbol, 0)
+                    if prices:
+                        drained[symbol] = (prices, vol)
+
+            for symbol, (prices, vol) in drained.items():
                 candle = {
                     "time":   int(time.time() * 1000),
                     "open":   prices[0],
@@ -1033,7 +1068,7 @@ async def handler(websocket):
                 async with hist_data_lock:
                     df       = daily_data[symbol]
                     last_row = df.iloc[-1]
-                    ta_snap  = compute_snapshot_ta(symbol)  # now returns full arrays too
+                    ta_snap  = await compute_snapshot_ta(symbol)  # now returns full arrays too
 
                     history_candles = [
                         {"t": int(idx.timestamp() * 1000),
