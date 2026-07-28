@@ -264,9 +264,10 @@ async def update_whatsapp(request: web.Request):
             cur.execute("UPDATE mv_users SET whatsapp=%s WHERE id=%s", (number, user["id"]))
         conn.commit()
     # Update session
-    for sess in _sessions.values():
+    for token,sess in _sessions.items():
         if sess.get("id") == user["id"]:
             sess["whatsapp"] = number
+            _persist_session(token, sess)
     return web.json_response({"ok": True})
 
 # ── PORTFOLIO ENDPOINTS ───────────────────────────────────────────────────────
