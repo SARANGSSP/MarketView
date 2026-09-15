@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -11,16 +11,29 @@
     <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300..900&family=Manrope:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
     <link href="/static/style.css" rel="stylesheet" />
   </head>
-  <body>
+  <body class="has-tab-rail">
+
+    <!-- ── TAB-RAIL ── -->
+    <nav class="tab-rail" id="tabRail">
+      <a href="/" class="tab-rail-item active"><span class="tab-rail-icon">📊</span>Dashboard</a>
+      <a href="/portfolio.html" class="tab-rail-item"><span class="tab-rail-icon">💼</span>Portfolio</a>
+      <a href="#" class="tab-rail-item disabled" title="Coming in a later phase"><span class="tab-rail-icon">📰</span>Research</a>
+      <a href="#" class="tab-rail-item" onclick="toggleAlerts(); return false;"><span class="tab-rail-icon">🔔</span>Alerts</a>
+      <a href="#" class="tab-rail-item disabled" title="Coming in a later phase"><span class="tab-rail-icon">⚙️</span>Settings</a>
+    </nav>
 
     <!-- ── NAVBAR ── -->
     <header class="navbar">
       <div class="nav-brand">
-        
+        <div class="nav-brand-icon">₹</div>
         <div>
           <div class="nav-brand-text">MarketView</div>
           <div class="nav-brand-sub">Indian Markets Edition</div>
         </div>
+      </div>
+      <div class="nav-ledger-search">
+        <span class="nav-ledger-search-glyph">🔍</span>
+        <input id="navLedgerSearch" type="text" placeholder="Look up a stock or index." autocomplete="off" />
       </div>
       <div class="nav-right">
         <div class="nav-live">
@@ -34,6 +47,12 @@
         <button class="nav-compare-btn" onclick="toggleCompare()" id="compareNavBtn">⇄ Compare</button>
         <a href="/portfolio.html" class="nav-compare-btn" id="navPortfolioBtn" style="text-decoration:none">💼 Portfolio</a>
         <a href="/auth/google/login" class="nav-compare-btn" id="navSignInBtn" style="text-decoration:none">Sign In</a>
+        <button class="mode-toggle" id="modeToggle" title="Toggle light/dark" aria-label="Toggle light and dark mode">
+          <span class="mode-toggle-thumb">
+            <span class="mode-icon-sun">☀️</span>
+            <span class="mode-icon-moon">🌙</span>
+          </span>
+        </button>
       </div>
     </header>
 
@@ -656,5 +675,20 @@ window.MV_WS_URL   = "wss://stockmarketview.duckdns.org/ws";
 window.MV_REST_URL = "https://stockmarketview.duckdns.org";
 window.MV_API_KEY  = "018252a4bd0fa6c9370630e02f5b89a8844ec3b678c71cb49efeb12827dd7699"    </script>
     <script src="/static/marketview.js"></script>
+    <!-- Mode toggle — Phase 2. Persists choice; grain/texture swap is Phase 6. -->
+    <script>
+      (function () {
+        var root = document.documentElement;
+        var saved = localStorage.getItem('mv-theme');
+        if (saved === 'light' || saved === 'dark') root.setAttribute('data-theme', saved);
+        var btn = document.getElementById('modeToggle');
+        if (!btn) return;
+        btn.addEventListener('click', function () {
+          var next = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+          root.setAttribute('data-theme', next);
+          localStorage.setItem('mv-theme', next);
+        });
+      })();
+    </script>
   </body>
 </html>

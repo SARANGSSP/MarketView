@@ -1256,6 +1256,33 @@ function handleSearch(val) {
   });
 })();
 
+// Wire up the navbar ledger-index search (Phase 2) — reuses the same
+// suggestion pipeline as #searchInput/#alertSym, picking a result loads
+// that stock, same as using the dashboard search box.
+(function _initNavSearch() {
+  const input = document.getElementById("navLedgerSearch");
+  if (!input) return;
+  input.setAttribute("autocomplete", "off");
+  input.addEventListener("input", function () {
+    const q = this.value.trim();
+    clearTimeout(_searchDebounce);
+    if (!q) { _closeDropdown(); return; }
+    _searchDebounce = setTimeout(() => _fetchSuggestionsFor(q, input, (sym) => {
+      input.value = "";
+      _closeDropdown();
+      handleSearch(sym);
+    }), 150);
+  });
+  input.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && this.value.trim()) {
+      _closeDropdown();
+      handleSearch(this.value.trim());
+      this.value = "";
+    }
+  });
+  input.addEventListener("blur", () => setTimeout(_closeDropdown, 150));
+})();
+
 // Wire up alert symbol input
 (function _initAlertSearch() {
   const input = document.getElementById("alertSym");
