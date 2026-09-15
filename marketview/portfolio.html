@@ -7,14 +7,16 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<!-- Redesign fonts — Phase 1 (Ledger & Bazaar). Loaded now, not yet wired to any selector. -->
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300..900&family=Manrope:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg:        #080d17;
+    --bg:        var(--ink-950);
     --surface:   #0d1526;
     --surface2:  #111e35;
     --border:    #1c2e4a;
-    --accent:    #4a90e2;
-    --accent2:   #00d4aa;
+    --accent:    #4a90e2;  /* placeholder — stays blue until Phase 4 re-skin swaps this to var(--brass-500) */
+    --accent2:   #00d4aa;  /* placeholder — stays teal until Phase 4 re-skin swaps this to var(--jade-400) */
     --red:       #f05e5e;
     --green:     #3dd68c;
     --yellow:    #f5c842;
@@ -22,6 +24,53 @@
     --muted:     #5a7399;
     --mono:      'Space Mono', monospace;
     --sans:      'DM Sans', sans-serif;
+
+    /* ══════════════════════════════════════════════════════════════
+       REDESIGN TOKENS — "Ledger & Bazaar" (Phase 1)
+       Same set as static/style.css, duplicated here since this page
+       doesn't load that stylesheet. Defined only — --accent/--accent2
+       above intentionally still point at the old hex values; only
+       --bg has been migrated since ink-950 ≈ the old bg with no
+       visible drift. Provisional hex guesses (no §2.1 spec was in
+       the uploaded file) — swap the values here in Phase 2+ and
+       every future consumer updates automatically.
+       ══════════════════════════════════════════════════════════════ */
+    --ink-950:      #080d17; /* kept at portfolio's original bg so var(--bg) above is a true no-op */
+    --ink-900:      #1c1712;
+    --ink-500:      #6b6153;
+    --paper-100:    #f8f2e4;
+    --paper-200:    #ece0c8;
+    --rule-300:     #d6c9a8;
+    --rule-700:     #252d40;
+    --brass-500:    #b8860b;
+    --brass-400:    #d4a72c;
+    --marigold-400: #f0a84b;
+    --marigold-500: #e0922e;
+    --jade-600:     #1f6f4f;
+    --jade-400:     #4caf7d;
+    --sindoor-600:  #b5342b;
+    --sindoor-400:  #dd6355;
+
+    --fs-1: 44px;
+    --fs-2: 34px;
+    --fs-3: 26px;
+    --fs-4: 20px;
+    --fs-5: 16px;
+    --fs-6: 14px;
+    --fs-7: 12px;
+    --font-display: 'Fraunces', serif;   /* target weight 560–650; use font-weight: 600 as the static approximation */
+    --font-body:    'Manrope', sans-serif;
+    --font-ledger:  'IBM Plex Mono', monospace;
+
+    --radius-default: 0px; /* exceptions to revisit: buy/sell/hold badge, mode toggle */
+  }
+
+  [data-theme="light"] {
+    --ink-950:  #f8f2e4;
+    --ink-900:  #1c1712;
+    --ink-500:  #6b6153;
+    --rule-300: #d6c9a8;
+    --rule-700: #252d40;
   }
 
   * { box-sizing: border-box; margin: 0; padding: 0; }
